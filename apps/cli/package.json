@@ -1,0 +1,16 @@
+{
+  "name": "@involvex/isync",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "isync": "./src/isync.ts"
+  },
+  "scripts": {
+    "isync": "bun run src/isync.ts",
+    "check": "bun check"
+  },
+  "dependencies": {
+    "@involvex/protocol": "workspace:*"
+  }
+}

@@ -214,11 +214,57 @@ export default function App() {
           void invoke<LanInfo>("get_lan_info").then(setLan);
         }),
       );
+      unsubs.push(
+        await listen<string>("isync-share", (e) => {
+          void (async () => {
+            try {
+              const url = parseAllowedUrl(e.payload) ?? e.payload.trim();
+              if (!parseAllowedUrl(url)) {
+                log(`isync share rejected: ${e.payload}`);
+                return;
+              }
+              await session.sendShareUrl(url);
+              pushHistory(url, "out");
+              log(`isync share → ${url}`);
+            } catch (err) {
+              log(`isync share failed: ${String(err)}`);
+            }
+          })();
+        }),
+      );
+      unsubs.push(
+        await listen<string>("isync-clipboard", (e) => {
+          void (async () => {
+            try {
+              const text = e.payload;
+              await writeText(text);
+              const url = parseAllowedUrl(text);
+              if (url) {
+                await session.sendShareUrl(url);
+              } else {
+                await session.sendClipboard(text);
+              }
+              pushHistory(text, "out");
+              log("isync clipboard → phone");
+            } catch (err) {
+              log(`isync clipboard failed: ${String(err)}`);
+            }
+          })();
+        }),
+      );
+      unsubs.push(
+        await listen("isync-find", () => {
+          void session
+            .sendFindPhone()
+            .then(() => log("isync find phone"))
+            .catch((err) => log(`isync find failed: ${String(err)}`));
+        }),
+      );
     })();
     return () => {
       for (const u of unsubs) u();
     };
-  }, [session, log]);
+  }, [session, log, pushHistory]);
 
   async function onAcceptPair(): Promise<void> {
     if (!session || !pendingPair) return;

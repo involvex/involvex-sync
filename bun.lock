@@ -8,6 +8,16 @@
         "typescript": "^5.7.3",
       },
     },
+    "apps/cli": {
+      "name": "@involvex/isync",
+      "version": "0.1.0",
+      "bin": {
+        "isync": "./src/isync.ts",
+      },
+      "dependencies": {
+        "@involvex/protocol": "workspace:*",
+      },
+    },
     "apps/desktop": {
       "name": "@involvex/desktop",
       "version": "0.1.0",
@@ -418,6 +428,8 @@
     "@img/sharp-win32-x64": ["@img/sharp-win32-x64@0.35.5", "", { "os": "win32", "cpu": "x64" }, "sha512-x76eH0vEiHlcMQu8Y8IenntaACtddpT6W0wmXtWrnKcnKI7ME5DdgqhAD6SEWOEl1v2zDvkZDhFA9KnURwpfqg=="],
 
     "@involvex/desktop": ["@involvex/desktop@workspace:apps/desktop"],
+
+    "@involvex/isync": ["@involvex/isync@workspace:apps/cli"],
 
     "@involvex/mobile": ["@involvex/mobile@workspace:apps/mobile"],
 

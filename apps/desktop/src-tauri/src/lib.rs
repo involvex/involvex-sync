@@ -1,3 +1,4 @@
+mod control;
 mod firewall;
 mod keys;
 mod mdns;
@@ -7,6 +8,7 @@ use keys::{StoredDeviceKeys, StoredPeer};
 use mdns::MdnsAdvertiser;
 use parking_lot::Mutex;
 use serde::Serialize;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tauri::{
     menu::{Menu, MenuItem},
@@ -20,6 +22,8 @@ const DEFAULT_PORT: u16 = 17391;
 struct AppState {
     hub: Arc<WsHub>,
     mdns: Mutex<Option<MdnsAdvertiser>>,
+    /// After startup grace, minimize may hide to tray.
+    tray_ready: Arc<AtomicBool>,
 }
 
 #[derive(Serialize)]
@@ -144,6 +148,7 @@ fn save_incoming_file(
 
 fn show_main_window(app: &AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
+        let _ = window.unminimize();
         let _ = window.show();
         let _ = window.set_focus();
     }
@@ -152,6 +157,7 @@ fn show_main_window(app: &AppHandle) {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let hub = WsHub::new(DEFAULT_PORT);
+    let tray_ready = Arc::new(AtomicBool::new(false));
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
@@ -164,6 +170,7 @@ pub fn run() {
         .manage(AppState {
             hub: hub.clone(),
             mdns: Mutex::new(None),
+            tray_ready: tray_ready.clone(),
         })
         .setup(move |app| {
             let handle = app.handle().clone();
@@ -174,11 +181,13 @@ pub fn run() {
                 }
             });
 
+            control::start(app.handle().clone(), hub.clone(), tray_ready.clone());
+
             let show_i = MenuItem::with_id(app, "show", "Open involvex Sync", true, None::<&str>)?;
             let quit_i = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
             let menu = Menu::with_items(app, &[&show_i, &quit_i])?;
 
-            let _tray = TrayIconBuilder::new()
+            let _tray = TrayIconBuilder::with_id("main")
                 .menu(&menu)
                 .tooltip("involvex Sync")
                 .icon(app.default_window_icon().unwrap().clone())
@@ -198,6 +207,18 @@ pub fn run() {
                     }
                 })
                 .build(app)?;
+
+            // Force the main window up — release builds were ending up tray-only
+            // because early Resized/minimize events hid it during cold start.
+            show_main_window(app.handle());
+
+            let ready_flag = tray_ready.clone();
+            let grace_handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+                show_main_window(&grace_handle);
+                ready_flag.store(true, Ordering::Relaxed);
+            });
 
             Ok(())
         })
@@ -232,7 +253,13 @@ pub fn run() {
                 event: WindowEvent::Resized(_),
                 ..
             } if label == "main" => {
-                // Hide to tray when the user minimizes (Windows taskbar).
+                let ready = app
+                    .try_state::<AppState>()
+                    .map(|s| s.tray_ready.load(Ordering::Relaxed))
+                    .unwrap_or(false);
+                if !ready {
+                    return;
+                }
                 if let Some(window) = app.get_webview_window("main") {
                     if window.is_minimized().unwrap_or(false) {
                         let _ = window.hide();

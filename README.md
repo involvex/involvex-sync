@@ -31,7 +31,24 @@ bun run desktop:dev
 ```
 
 Needs Rust + WebView2. The app listens on TCP **17391**, shows a pairing QR,
-and opens http(s) URLs from the phone.
+and opens http(s) URLs from the phone. Close/minimize hides to the **tray** —
+left-click the tray icon (or `isync show`) if the window is missing.
+
+### CLI (`isync`)
+
+With the desktop app running:
+
+```bash
+bun run isync -- status
+bun run isync -- clipboard get
+bun run isync -- clipboard set "hello from PC"
+bun run isync -- clipboard push          # OS clipboard → phone
+bun run isync -- share https://example.com
+bun run isync -- find
+bun run isync -- show
+```
+
+Install a global shim (optional): `bun link --cwd apps/cli` then `isync status`.
 
 ### Mobile (Android)
 

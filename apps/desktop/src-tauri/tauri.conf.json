@@ -22,12 +22,7 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; connect-src 'self' ws: wss: http://ipc.localhost; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'"
-    },
-    "trayIcon": {
-      "iconPath": "icons/icon.png",
-      "iconAsTemplate": false,
-      "tooltip": "involvex Sync"
+      "csp": "default-src 'self'; connect-src 'self' ws: wss: http://ipc.localhost http://127.0.0.1:*; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'"
     }
   },
   "bundle": {
@@ -48,7 +43,7 @@
   },
   "plugins": {
     "autostart": {
-      "enabled": true
+      "enabled": false
     }
   }
 }

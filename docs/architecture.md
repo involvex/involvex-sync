@@ -50,6 +50,10 @@ InVx Termux package: `com.involvex.termux_app`.
 
 - Close / minimize hides the main window; process stays in the system tray.
 - Tray menu: Open / Quit. Left-click restores the window.
+- Startup shows the window and ignores minimize-to-tray for ~3s (avoids a
+  Windows resize race that left release builds tray-only).
+- Loopback control API on `127.0.0.1:17392` for the `isync` CLI
+  (`share`, `clipboard`, `find`, `show`, `status`).
 
 ## Sync Keyboard (PC → phone)
 
