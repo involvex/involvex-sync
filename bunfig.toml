@@ -1,0 +1,26 @@
+[lint]
+typeAware = true
+ignorePatterns = [
+  "android/",
+  "ios/",
+  "src-tauri/target/",
+  ".expo/",
+  "dist/",
+  "*.lock",
+]
+
+[lint.rules]
+# "no-console" = "warn"
+# "eqeqeq" = ["error", "smart"]
+
+[fmt]
+printWidth = 80
+tabWidth = 2
+ignorePatterns = [
+  "android/",
+  "ios/",
+  "src-tauri/target/",
+  ".expo/",
+  "dist/",
+  "*.lock",
+]

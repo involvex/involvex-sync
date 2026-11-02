@@ -1,0 +1,31 @@
+name: ci
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.4
+
+      - name: Install
+        run: bun install --frozen-lockfile
+
+      - name: Lint
+        run: bun lint
+
+      - name: Format
+        run: bun fmt --check packages apps/desktop/src apps/mobile/App.tsx apps/mobile/src apps/mobile/modules workers/relay/src docs package.json bunfig.toml README.md
+
+      - name: Typecheck
+        run: bun run check
+
+      - name: Test
+        run: bun test

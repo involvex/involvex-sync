@@ -1,0 +1,9 @@
+app.involvex.sync.share.invx-share-pngs-0 D:\repos\involvex\involvex-sync\apps\mobile\modules\invx-share\android\build\generated\res\pngs\debug
+app.involvex.sync.share.invx-share-updated_navigation_xml-1 D:\repos\involvex\involvex-sync\apps\mobile\modules\invx-share\android\build\generated\updated_navigation_xml\debug
+app.involvex.sync.share.invx-share-mergeDebugResources-2 D:\repos\involvex\involvex-sync\apps\mobile\modules\invx-share\android\build\intermediates\incremental\debug\mergeDebugResources\merged.dir
+app.involvex.sync.share.invx-share-mergeDebugResources-3 D:\repos\involvex\involvex-sync\apps\mobile\modules\invx-share\android\build\intermediates\incremental\debug\mergeDebugResources\stripped.dir
+app.involvex.sync.share.invx-share-debug-4 D:\repos\involvex\involvex-sync\apps\mobile\modules\invx-share\android\build\intermediates\merged_res\debug\mergeDebugResources
+app.involvex.sync.share.invx-share-debug-5 D:\repos\involvex\involvex-sync\apps\mobile\modules\invx-share\android\build\intermediates\packaged_res\debug\packageDebugResources
+app.involvex.sync.share.invx-share-debug-6 D:\repos\involvex\involvex-sync\apps\mobile\modules\invx-share\android\src\debug\res
+app.involvex.sync.share.invx-share-main-7 D:\repos\involvex\involvex-sync\apps\mobile\modules\invx-share\android\src\main\res
+gradleHome-0 C:\Users\lukas\.gradle

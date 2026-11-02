@@ -1,0 +1,12 @@
+name = "involvex-sync"
+main = "src/index.ts"
+compatibility_date = "2025-01-01"
+workers_dev = true
+
+[[durable_objects.bindings]]
+name = "PAIR_ROOM"
+class_name = "PairRoom"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["PairRoom"]

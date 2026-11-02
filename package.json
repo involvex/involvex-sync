@@ -1,0 +1,28 @@
+{
+  "name": "involvex-sync",
+  "private": true,
+  "workspaces": [
+    "packages/*",
+    "apps/*",
+    "workers/*"
+  ],
+  "scripts": {
+    "build": "bun run --filter @involvex/protocol build",
+    "test": "bun run --filter @involvex/protocol test",
+    "lint": "bun lint",
+    "fmt": "bun fmt",
+    "check": "bun check --no-script -p packages/protocol && bun check --no-script -p apps/desktop && bun check --no-script -p apps/mobile && bun check --no-script -p workers/relay",
+    "desktop:dev": "bun run --filter @involvex/desktop tauri dev",
+    "desktop:build": "bun run --filter @involvex/desktop tauri build",
+    "mobile:start": "bun run --filter @involvex/mobile start",
+    "mobile:build": "bun run --filter @involvex/mobile build",
+    "mobile:android": "bun run --filter @involvex/mobile android",
+    "relay:dev": "bun run --filter @involvex/relay dev",
+    "relay:deploy": "bun run --filter @involvex/relay deploy",
+    "relay:build": "bun run --filter @involvex/relay build"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.3"
+  },
+  "packageManager": "bun@1.4.4"
+}
