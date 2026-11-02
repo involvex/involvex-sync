@@ -1,9 +1,6 @@
 import { sha256 } from "@noble/hashes/sha2.js";
 import { bytesToHex } from "./hex";
-import {
-  FILE_CHUNK_BYTES,
-  MAX_CHUNKED_FILE_BYTES,
-} from "./types";
+import { FILE_CHUNK_BYTES, MAX_CHUNKED_FILE_BYTES } from "./types";
 
 export type ChunkPlan = {
   transferId: string;

@@ -1,7 +1,4 @@
-const {
-  withAndroidManifest,
-  AndroidConfig,
-} = require("@expo/config-plugins");
+const { withAndroidManifest, AndroidConfig } = require("@expo/config-plugins");
 
 function withInvxIme(config) {
   return withAndroidManifest(config, (cfg) => {
