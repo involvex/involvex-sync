@@ -12,35 +12,48 @@ export {
   sharedSecret,
   signFrame,
   verifyFrame,
-} from "./crypto.js";
+} from "./crypto";
 export {
   clipboardUpdateBody,
   createMessageBody,
   decryptFrame,
   encryptFrame,
+  fileTransferBody,
+  notificationMirrorBody,
   parseFrame,
   serializeFrame,
   shareUrlBody,
   type DecryptResult,
   type PeerPublicKeys,
-} from "./frame.js";
-export { bytesToHex, hexToBytes, timingSafeEqualHex } from "./hex.js";
-export { LoopGuard, type LoopGuardOptions } from "./loop.js";
+} from "./frame";
+export { bytesToHex, hexToBytes, timingSafeEqualHex } from "./hex";
+export { LoopGuard, type LoopGuardOptions } from "./loop";
 export {
+  buildPairAccept,
+  buildPairReject,
+  buildPairRequest,
   buildPairingPayload,
   deviceFingerprint,
   pairingQrText,
+  parsePairHandshake,
   parsePairingQr,
+  type PairAcceptPayload,
+  type PairHandshake,
+  type PairRejectPayload,
+  type PairRequestPayload,
   type PairingPayload,
-} from "./pairing.js";
+} from "./pairing";
 export {
   DEFAULT_PORT,
+  MAX_FILE_TRANSFER_BYTES,
   PROTOCOL_VERSION,
   type ClipboardUpdatePayload,
   type DeviceIdentity,
   type DeviceKeys,
   type DeviceType,
+  type FileTransferPayload,
   type KeyPairHex,
+  type NotificationMirrorPayload,
   type MessageBody,
   type MessagePayload,
   type MessageType,
@@ -51,5 +64,5 @@ export {
   type TermuxClipboardSetPayload,
   type TermuxOpenUrlPayload,
   type WireFrame,
-} from "./types.js";
-export { looksLikeUrl, parseAllowedUrl } from "./url.js";
+} from "./types";
+export { looksLikeUrl, parseAllowedUrl } from "./url";

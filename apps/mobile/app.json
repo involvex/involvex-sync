@@ -30,18 +30,31 @@
         "POST_NOTIFICATIONS",
         "INTERNET",
         "ACCESS_NETWORK_STATE",
-        "CHANGE_WIFI_MULTICAST_STATE"
+        "CHANGE_WIFI_MULTICAST_STATE",
+        "com.involvex.termux_app.permission.RUN_COMMAND"
       ],
       "intentFilters": [
         {
           "action": "SEND",
           "category": ["DEFAULT"],
-          "data": [{ "mimeType": "text/plain" }]
+          "data": [
+            { "mimeType": "text/*" },
+            { "mimeType": "image/*" },
+            { "mimeType": "application/pdf" },
+            { "mimeType": "application/*" },
+            { "mimeType": "*/*" }
+          ]
         },
         {
-          "action": "SEND",
+          "action": "SEND_MULTIPLE",
           "category": ["DEFAULT"],
-          "data": [{ "mimeType": "text/*" }]
+          "data": [
+            { "mimeType": "text/*" },
+            { "mimeType": "image/*" },
+            { "mimeType": "application/pdf" },
+            { "mimeType": "application/*" },
+            { "mimeType": "*/*" }
+          ]
         }
       ]
     },
@@ -56,10 +69,14 @@
         }
       ],
       "./modules/invx-share/app.plugin.js",
-      "./modules/invx-keepalive/app.plugin.js"
+      "./modules/invx-keepalive/app.plugin.js",
+      "./modules/invx-termux/app.plugin.js",
+      "./modules/invx-mdns/app.plugin.js",
+      "./modules/invx-notify/app.plugin.js"
     ],
     "extra": {
-      "relayUrl": "wss://sync.involvex.workers.dev/ws"
+      "relayUrl": "wss://sync.involvex.workers.dev/ws",
+      "termuxPackage": "com.involvex.termux_app"
     }
   }
 }

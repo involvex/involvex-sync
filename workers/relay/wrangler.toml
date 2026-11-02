@@ -1,4 +1,5 @@
 name = "involvex-sync"
+account_id = "d4e0f1c1c830642168db2f4ea3aece58"
 main = "src/index.ts"
 compatibility_date = "2025-01-01"
 workers_dev = true

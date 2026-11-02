@@ -1,4 +1,4 @@
-import { hashText } from "./crypto.js";
+import { hashText } from "./crypto";
 
 export type LoopGuardOptions = {
   /** How long to remember a hash (ms). Default 5s. */

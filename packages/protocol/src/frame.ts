@@ -7,16 +7,16 @@ import {
   sharedSecret,
   signFrame,
   verifyFrame,
-} from "./crypto.js";
-import { bytesToHex } from "./hex.js";
+} from "./crypto";
+import { bytesToHex } from "./hex";
 import type {
   DeviceKeys,
   MessageBody,
   MessagePayload,
   WireFrame,
-} from "./types.js";
-import { PROTOCOL_VERSION } from "./types.js";
-import { parseAllowedUrl } from "./url.js";
+} from "./types";
+import { PROTOCOL_VERSION } from "./types";
+import { parseAllowedUrl } from "./url";
 
 export type PeerPublicKeys = {
   deviceId: string;
@@ -156,6 +156,52 @@ export function clipboardUpdateBody(
       type: "clipboard_update",
       text,
       hash: hashText(text),
+    },
+    to,
+  );
+}
+
+export function fileTransferBody(
+  from: string,
+  file: {
+    name: string;
+    mimeType: string;
+    dataBase64: string;
+    size: number;
+  },
+  to?: string,
+): MessageBody {
+  return createMessageBody(
+    from,
+    {
+      type: "file_transfer",
+      name: file.name,
+      mimeType: file.mimeType,
+      dataBase64: file.dataBase64,
+      size: file.size,
+    },
+    to,
+  );
+}
+
+export function notificationMirrorBody(
+  from: string,
+  note: {
+    title: string;
+    body: string;
+    packageName?: string;
+    when?: number;
+  },
+  to?: string,
+): MessageBody {
+  return createMessageBody(
+    from,
+    {
+      type: "notification_mirror",
+      title: note.title.slice(0, 200),
+      body: note.body.slice(0, 500),
+      packageName: note.packageName,
+      when: note.when ?? Date.now(),
     },
     to,
   );

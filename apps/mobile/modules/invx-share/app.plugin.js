@@ -1,9 +1,7 @@
 const { withAndroidManifest, AndroidConfig } = require("@expo/config-plugins");
 
 /**
- * Add ACTION_SEND on the launcher activity when it already exists.
- * Prefer app.json android.intentFilters for the same purpose during prebuild;
- * this plugin is a safety net for subsequent config syncs.
+ * Add ACTION_SEND / SEND_MULTIPLE on the launcher activity for text + files.
  */
 function findLauncherActivity(app) {
   const activities = app.activity || [];
@@ -16,13 +14,16 @@ function findLauncherActivity(app) {
         (a) => a.$?.["android:name"] === "android.intent.action.MAIN",
       );
       const hasLauncher = categories.some(
-        (c) =>
-          c.$?.["android:name"] === "android.intent.category.LAUNCHER",
+        (c) => c.$?.["android:name"] === "android.intent.category.LAUNCHER",
       );
       if (hasMain && hasLauncher) return activity;
     }
   }
   return null;
+}
+
+function hasAction(filter, name) {
+  return (filter.action || []).some((a) => a.$?.["android:name"] === name);
 }
 
 function withInvxShare(config) {
@@ -42,26 +43,44 @@ function withInvxShare(config) {
         : null);
 
     if (!activity) {
-      // Base template not ready yet — app.json intentFilters still apply.
       return cfg;
     }
 
     activity["intent-filter"] = activity["intent-filter"] || [];
 
-    const already = activity["intent-filter"].some((filter) => {
-      const actions = filter.action || [];
-      return actions.some(
-        (a) => a.$?.["android:name"] === "android.intent.action.SEND",
-      );
-    });
+    const mimeTypes = [
+      "text/*",
+      "image/*",
+      "application/pdf",
+      "application/*",
+      "*/*",
+    ];
 
-    if (!already) {
+    const alreadySend = activity["intent-filter"].some((filter) =>
+      hasAction(filter, "android.intent.action.SEND"),
+    );
+    if (!alreadySend) {
       activity["intent-filter"].push({
         action: [{ $: { "android:name": "android.intent.action.SEND" } }],
         category: [
           { $: { "android:name": "android.intent.category.DEFAULT" } },
         ],
-        data: [{ $: { "android:mimeType": "text/plain" } }],
+        data: mimeTypes.map((m) => ({ $: { "android:mimeType": m } })),
+      });
+    }
+
+    const alreadyMulti = activity["intent-filter"].some((filter) =>
+      hasAction(filter, "android.intent.action.SEND_MULTIPLE"),
+    );
+    if (!alreadyMulti) {
+      activity["intent-filter"].push({
+        action: [
+          { $: { "android:name": "android.intent.action.SEND_MULTIPLE" } },
+        ],
+        category: [
+          { $: { "android:name": "android.intent.category.DEFAULT" } },
+        ],
+        data: mimeTypes.map((m) => ({ $: { "android:mimeType": m } })),
       });
     }
 

@@ -12,6 +12,9 @@ apps/desktop/src-tauri/cargo-*.log
 apps/mobile/android/
 apps/mobile/ios/
 apps/mobile/.expo/
+apps/mobile/modules/*/android/build/
+apps/mobile/modules/*/android/.cxx/
+*.tsbuildinfo
 workers/relay/.wrangler/
 *.local
 .cursor/

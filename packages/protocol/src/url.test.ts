@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { looksLikeUrl, parseAllowedUrl } from "./url.js";
+import { looksLikeUrl, parseAllowedUrl } from "./url";
 
 describe("parseAllowedUrl", () => {
   test("accepts https", () => {

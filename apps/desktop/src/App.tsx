@@ -8,13 +8,25 @@ import {
   parsePairingQr,
   serializeFrame,
   shareUrlBody,
+  type PairRequestPayload,
 } from "@involvex/protocol";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { enable as enableAutostart } from "@tauri-apps/plugin-autostart";
 import { readText, writeText } from "@tauri-apps/plugin-clipboard-manager";
+import {
+  isPermissionGranted,
+  requestPermission,
+  sendNotification,
+} from "@tauri-apps/plugin-notification";
 import QRCode from "qrcode";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  appendClipboardHistory,
+  clearClipboardHistory,
+  loadClipboardHistory,
+  type ClipboardHistoryEntry,
+} from "./services/clipboardHistory";
 import {
   type StoredDeviceKeys,
   type StoredPeer,
@@ -26,6 +38,11 @@ import {
 } from "./services/identity";
 import { RelayClient } from "./services/relay";
 import { SyncSession } from "./services/session";
+import {
+  loadSettings,
+  saveSettings,
+  type DesktopSettings,
+} from "./services/settings";
 import "./App.css";
 
 type LanInfo = {
@@ -50,11 +67,29 @@ export default function App() {
   const [firewallMsg, setFirewallMsg] = useState<string>("");
   const [relayStatus, setRelayStatus] = useState<string>("off");
   const [relay, setRelay] = useState<RelayClient | null>(null);
+  const [pendingPair, setPendingPair] = useState<PairRequestPayload | null>(
+    null,
+  );
+  const [history, setHistory] = useState<ClipboardHistoryEntry[]>(() =>
+    loadClipboardHistory(),
+  );
+  const [settings, setSettings] = useState<DesktopSettings>(() =>
+    loadSettings(),
+  );
+  const settingsRef = useRef(settings);
+  settingsRef.current = settings;
 
   const log = useCallback((line: string) => {
     const stamp = new Date().toLocaleTimeString();
     setLogs((prev) => [`[${stamp}] ${line}`, ...prev].slice(0, 80));
   }, []);
+
+  const pushHistory = useCallback(
+    (text: string, direction: ClipboardHistoryEntry["direction"]) => {
+      setHistory(appendClipboardHistory(text, direction));
+    },
+    [],
+  );
 
   const session = useMemo(() => {
     if (!identity) return null;
@@ -65,11 +100,51 @@ export default function App() {
       },
       onClipboard: async (text) => {
         await writeText(text);
+        pushHistory(text, "in");
         log("clipboard updated from peer");
+      },
+      onFileTransfer: async (file) => {
+        try {
+          const path = await invoke<string>("save_incoming_file", {
+            name: file.name,
+            dataBase64: file.dataBase64,
+          });
+          log(`saved file → ${path}`);
+        } catch (e) {
+          log(`file save failed: ${String(e)}`);
+        }
+      },
+      onNotificationMirror: async (note) => {
+        if (!settingsRef.current.showPhoneNotifications) {
+          log(`notif (ignored): ${note.title}`);
+          return;
+        }
+        try {
+          let granted = await isPermissionGranted();
+          if (!granted) {
+            const perm = await requestPermission();
+            granted = perm === "granted";
+          }
+          if (granted) {
+            sendNotification({
+              title: note.title || "Phone",
+              body: note.body || note.packageName || "",
+            });
+          }
+          log(`notif: ${note.title}`);
+        } catch (e) {
+          log(`notif failed: ${String(e)}`);
+        }
+      },
+      onPairRequest: (request) => {
+        setPendingPair(request);
+        log(
+          `pair request from ${request.device.name} (${deviceFingerprint(request.device)})`,
+        );
       },
       onLog: log,
     });
-  }, [identity, log]);
+  }, [identity, log, pushHistory]);
 
   useEffect(() => {
     if (session && peer) session.setPeer(peer);
@@ -139,6 +214,34 @@ export default function App() {
     };
   }, [session, log]);
 
+  async function onAcceptPair(): Promise<void> {
+    if (!session || !pendingPair) return;
+    const next: StoredPeer = {
+      deviceId: pendingPair.device.deviceId,
+      name: pendingPair.device.name,
+      deviceType: pendingPair.device.type,
+      ed25519PublicKey: pendingPair.device.ed25519PublicKey,
+      x25519PublicKey: pendingPair.device.x25519PublicKey,
+    };
+    await session.acceptPair(
+      pendingPair,
+      lan?.ip ?? undefined,
+      lan?.port || DEFAULT_PORT,
+    );
+    await savePeer(next);
+    session.setPeer(next);
+    setPeer(next);
+    setPendingPair(null);
+    log(`accepted ${next.name}`);
+  }
+
+  async function onRejectPair(): Promise<void> {
+    if (!session) return;
+    await session.rejectPair("user rejected");
+    setPendingPair(null);
+    log("pair rejected");
+  }
+
   async function onPairPaste(): Promise<void> {
     const parsed = parsePairingQr(pairPaste.trim());
     if (!parsed) {
@@ -167,10 +270,12 @@ export default function App() {
     const url = parseAllowedUrl(text);
     if (url) {
       await session.sendShareUrl(url);
+      pushHistory(url, "out");
       log(`sent clipboard url ${url}`);
       return;
     }
     await session.sendClipboard(text);
+    pushHistory(text, "out");
     log("sent clipboard text");
   }
 
@@ -227,6 +332,7 @@ export default function App() {
     }
     try {
       await session.sendShareUrl(url);
+      pushHistory(url, "out");
       log(`sent link via LAN ${url}`);
       return;
     } catch {
@@ -244,7 +350,21 @@ export default function App() {
       x25519PublicKey: peer.x25519PublicKey,
     });
     relay.send(serializeFrame(frame));
+    pushHistory(url, "out");
     log(`sent link via relay ${url}`);
+  }
+
+  async function resendHistory(entry: ClipboardHistoryEntry): Promise<void> {
+    if (!session) return;
+    try {
+      const url = parseAllowedUrl(entry.text);
+      if (url) await session.sendShareUrl(url);
+      else await session.sendClipboard(entry.text);
+      pushHistory(entry.text, "out");
+      log("resent from history");
+    } catch (e) {
+      log(`resend failed: ${String(e)}`);
+    }
   }
 
   return (
@@ -261,6 +381,26 @@ export default function App() {
         </p>
       </header>
 
+      {pendingPair ? (
+        <section className="card pair-banner">
+          <h2>Pair request</h2>
+          <p>
+            <strong>{pendingPair.device.name}</strong> wants to pair
+          </p>
+          <p className="mono small">
+            fp {deviceFingerprint(pendingPair.device)}
+          </p>
+          <div className="row">
+            <button type="button" onClick={() => void onAcceptPair()}>
+              Accept
+            </button>
+            <button type="button" onClick={() => void onRejectPair()}>
+              Reject
+            </button>
+          </div>
+        </section>
+      ) : null}
+
       <section className="grid">
         <article className="card">
           <h2>This PC</h2>
@@ -269,7 +409,6 @@ export default function App() {
               <p>
                 <strong>{identity.name}</strong>
               </p>
-              <p className="mono small">{identity.deviceId}</p>
               <p className="mono small">
                 fp{" "}
                 {deviceFingerprint({
@@ -284,7 +423,7 @@ export default function App() {
                 <img className="qr" src={qrDataUrl} alt="Pairing QR code" />
               ) : null}
               <p className="muted small">
-                Scan with the Android app, or paste the phone QR JSON below.
+                Phone discovers this PC on LAN, or paste JSON in Advanced.
               </p>
             </>
           ) : (
@@ -305,20 +444,23 @@ export default function App() {
               </button>
             </>
           ) : (
-            <p className="muted">No peer yet.</p>
+            <p className="muted">No peer yet — wait for a LAN pair request.</p>
           )}
-          <label className="stack">
-            Paste phone pairing JSON
-            <textarea
-              value={pairPaste}
-              onChange={(e) => setPairPaste(e.target.value)}
-              rows={5}
-              placeholder='{"kind":"involvex-sync-pair",...}'
-            />
-          </label>
-          <button type="button" onClick={() => void onPairPaste()}>
-            Pair
-          </button>
+          <details>
+            <summary>Manual JSON pair</summary>
+            <label className="stack">
+              Paste phone pairing JSON
+              <textarea
+                value={pairPaste}
+                onChange={(e) => setPairPaste(e.target.value)}
+                rows={5}
+                placeholder='{"kind":"involvex-sync-pair",...}'
+              />
+            </label>
+            <button type="button" onClick={() => void onPairPaste()}>
+              Pair
+            </button>
+          </details>
         </article>
 
         <article className="card">
@@ -339,8 +481,69 @@ export default function App() {
               Send clipboard
             </button>
           </div>
+        </article>
+
+        <article className="card">
+          <h2>Clipboard history</h2>
+          {history.length === 0 ? (
+            <p className="muted small">Nothing yet.</p>
+          ) : (
+            <ul className="history">
+              {history.slice(0, 12).map((entry) => (
+                <li key={entry.id}>
+                  <button
+                    type="button"
+                    className="linkish"
+                    onClick={() => void writeText(entry.text)}
+                    title="Copy"
+                  >
+                    [{entry.direction}] {entry.text.slice(0, 120)}
+                    {entry.text.length > 120 ? "…" : ""}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void resendHistory(entry)}
+                  >
+                    Send
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+          <button
+            type="button"
+            onClick={() => {
+              clearClipboardHistory();
+              setHistory([]);
+            }}
+          >
+            Clear history
+          </button>
+        </article>
+
+        <article className="card">
+          <h2>Settings</h2>
+          <label className="check">
+            <input
+              type="checkbox"
+              checked={settings.showPhoneNotifications}
+              onChange={(e) => {
+                const next = saveSettings({
+                  showPhoneNotifications: e.target.checked,
+                });
+                setSettings(next);
+                log(
+                  next.showPhoneNotifications
+                    ? "phone notifications on"
+                    : "phone notifications off",
+                );
+              }}
+            />
+            Show phone notifications
+          </label>
           <p className="muted small">
-            Phone shows a notification; tap opens the browser (Android 10+).
+            Close / minimize hides to the tray. Quit only from the tray menu.
+            Phone must enable Notification access + “Mirror to PC”.
           </p>
         </article>
 
@@ -367,8 +570,7 @@ export default function App() {
           {firewallMsg ? <p className="small">{firewallMsg}</p> : null}
           <p className="muted small">Relay: {relayStatus}</p>
           <p className="muted small">
-            mDNS advertises <code>_invxconnect._tcp.local</code>. Prefer LAN at
-            home; use the relay (or MyFritz host on the phone) when away.
+            mDNS advertises <code>_invxconnect._tcp.local</code>.
           </p>
         </article>
       </section>

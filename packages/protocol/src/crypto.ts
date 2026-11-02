@@ -1,16 +1,26 @@
 import { xchacha20poly1305 } from "@noble/ciphers/chacha.js";
 import { ed25519, x25519 } from "@noble/curves/ed25519.js";
 import { sha256 } from "@noble/hashes/sha2.js";
-import { bytesToHex, hexToBytes } from "./hex.js";
-import type { DeviceKeys, KeyPairHex } from "./types.js";
+import { bytesToHex, hexToBytes } from "./hex";
+import type { DeviceKeys, KeyPairHex } from "./types";
 
 const utf8 = new TextEncoder();
 const utf8d = new TextDecoder();
 
-export function randomBytes(length: number): Uint8Array {
+function secureRandom(length: number): Uint8Array {
   const out = new Uint8Array(length);
-  crypto.getRandomValues(out);
+  const webCrypto = globalThis.crypto;
+  if (!webCrypto?.getRandomValues) {
+    throw new Error(
+      "crypto.getRandomValues unavailable — load a polyfill (e.g. react-native-get-random-values) before @involvex/protocol",
+    );
+  }
+  webCrypto.getRandomValues(out);
   return out;
+}
+
+export function randomBytes(length: number): Uint8Array {
+  return secureRandom(length);
 }
 
 export function generateDeviceId(): string {

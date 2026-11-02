@@ -3,15 +3,15 @@
  * EventTarget bus — stands in for WebSocket without I/O.
  */
 import { describe, expect, test } from "bun:test";
-import { generateDeviceKeys } from "./crypto.js";
+import { generateDeviceKeys } from "./crypto";
 import {
   decryptFrame,
   encryptFrame,
   parseFrame,
   serializeFrame,
   shareUrlBody,
-} from "./frame.js";
-import type { WireFrame } from "./types.js";
+} from "./frame";
+import type { WireFrame } from "./types";
 
 class Bus {
   private readonly listeners = new Map<string, (raw: string) => void>();

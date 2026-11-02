@@ -9,8 +9,8 @@ import {
   sharedSecret,
   signFrame,
   verifyFrame,
-} from "./crypto.js";
-import { PROTOCOL_VERSION } from "./types.js";
+} from "./crypto";
+import { PROTOCOL_VERSION } from "./types";
 
 describe("crypto", () => {
   test("X25519 shared secrets match", () => {

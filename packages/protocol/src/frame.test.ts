@@ -1,17 +1,21 @@
 import { describe, expect, test } from "bun:test";
-import { generateDeviceKeys } from "./crypto.js";
+import { generateDeviceKeys } from "./crypto";
 import {
   decryptFrame,
   encryptFrame,
   parseFrame,
   serializeFrame,
   shareUrlBody,
-} from "./frame.js";
+} from "./frame";
 import {
+  buildPairAccept,
+  buildPairReject,
+  buildPairRequest,
   buildPairingPayload,
   pairingQrText,
+  parsePairHandshake,
   parsePairingQr,
-} from "./pairing.js";
+} from "./pairing";
 
 describe("frame encrypt/decrypt", () => {
   test("phone → desktop share_url roundtrip", () => {
@@ -87,5 +91,25 @@ describe("pairing qr", () => {
     const parsed = parsePairingQr(text);
     expect(parsed?.device.deviceId).toBe(keys.deviceId);
     expect(parsed?.host).toBe("192.168.1.10");
+  });
+});
+
+describe("pair handshake", () => {
+  test("request / accept / reject parse", () => {
+    const keys = generateDeviceKeys();
+    const req = buildPairRequest(keys, "Pixel", "android");
+    expect(parsePairHandshake(JSON.stringify(req))?.kind).toBe(
+      "involvex-sync-pair-request",
+    );
+    const acc = buildPairAccept(keys, "PC", "windows", "192.168.1.2", 17391);
+    const parsedAcc = parsePairHandshake(JSON.stringify(acc));
+    expect(parsedAcc?.kind).toBe("involvex-sync-pair-accept");
+    if (parsedAcc?.kind === "involvex-sync-pair-accept") {
+      expect(parsedAcc.host).toBe("192.168.1.2");
+    }
+    const rej = buildPairReject(keys.deviceId, "nope");
+    expect(parsePairHandshake(JSON.stringify(rej))?.kind).toBe(
+      "involvex-sync-pair-reject",
+    );
   });
 });

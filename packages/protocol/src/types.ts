@@ -23,7 +23,12 @@ export type MessageType =
   | "pong"
   | "pair_ack"
   | "termux_open_url"
-  | "termux_clipboard_set";
+  | "termux_clipboard_set"
+  | "file_transfer"
+  | "notification_mirror";
+
+/** Max decoded file size for first-cut base64 transfer (2 MiB). */
+export const MAX_FILE_TRANSFER_BYTES = 2 * 1024 * 1024;
 
 export type ShareUrlPayload = {
   type: "share_url";
@@ -62,6 +67,24 @@ export type TermuxClipboardSetPayload = {
   text: string;
 };
 
+export type FileTransferPayload = {
+  type: "file_transfer";
+  name: string;
+  mimeType: string;
+  /** Base64 file bytes (≤ MAX_FILE_TRANSFER_BYTES). */
+  dataBase64: string;
+  size: number;
+};
+
+/** Mirrored Android notification (title/body only). */
+export type NotificationMirrorPayload = {
+  type: "notification_mirror";
+  title: string;
+  body: string;
+  packageName?: string;
+  when: number;
+};
+
 export type MessagePayload =
   | ShareUrlPayload
   | ClipboardUpdatePayload
@@ -69,7 +92,9 @@ export type MessagePayload =
   | PongPayload
   | PairAckPayload
   | TermuxOpenUrlPayload
-  | TermuxClipboardSetPayload;
+  | TermuxClipboardSetPayload
+  | FileTransferPayload
+  | NotificationMirrorPayload;
 
 /** Cleartext body sealed inside the encrypted frame. */
 export type MessageBody = {

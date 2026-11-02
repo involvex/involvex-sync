@@ -29,4 +29,36 @@
 
 ## Termux (allowlist)
 
-Later: `termux_open_url` / `termux_clipboard_set` map to Termux:API. Free shell is out of scope for v0.1.
+InVx Termux package: `com.involvex.termux_app`.
+
+- Termux **defines** `com.involvex.termux_app.permission.RUN_COMMAND` (`dangerous`).
+- `RunCommandService` is `exported` and gated by that permission.
+- involvex Sync must `uses-permission` it, add `<queries>` for the package,
+  request it at runtime, then `startForegroundService` with action
+  `com.involvex.termux_app.RUN_COMMAND`.
+- Only allowlisted binaries (`termux-open-url`, `termux-clipboard-set`) — no free shell.
+
+## Notification mirror
+
+- Opt-in on both sides (default off).
+- Phone: `NotificationListenerService` + setting “Mirror to PC”.
+- Desktop: setting “Show phone notifications” → OS toast via
+  `tauri-plugin-notification`.
+- Wire payload: encrypted `notification_mirror` (title, body, package?, when).
+
+## Desktop tray
+
+- Close / minimize hides the main window; process stays in the system tray.
+- Tray menu: Open / Quit. Left-click restores the window.
+
+## Follow-up: keyboard receiver (not implemented)
+
+PC types into the focused Android field as if Sync were a soft keyboard.
+
+1. Protocol: `keyboard_text` / `keyboard_key` (allowlisted), gated by paired +
+   settings on both ends.
+2. Android `InputMethodService` (“involvex Sync Keyboard”) — user must select
+   it as the IME; never auto-enable.
+3. Desktop: small input UI / send-on-enter; visible “typing to phone” indicator;
+   kill switch on both sides.
+4. Out of scope for v1: Bluetooth HID, mouse/touchpad, gamepad.

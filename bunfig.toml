@@ -1,3 +1,7 @@
+[install]
+# Metro/Expo cannot resolve Bun's isolated .bun store paths.
+linker = "hoisted"
+
 [lint]
 typeAware = true
 ignorePatterns = [

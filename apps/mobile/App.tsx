@@ -1,5 +1,6 @@
 import {
   DEFAULT_PORT,
+  MAX_FILE_TRANSFER_BYTES,
   buildPairingPayload,
   deviceFingerprint,
   looksLikeUrl,
@@ -15,19 +16,44 @@ import {
   AppState,
   Linking,
   Pressable,
-  SafeAreaView,
   ScrollView,
   StyleSheet,
   Text,
   TextInput,
   View,
 } from "react-native";
+import { SafeAreaProvider, SafeAreaView } from "react-native-safe-area-context";
 import { startKeepalive, stopKeepalive } from "./modules/invx-keepalive/src";
 import {
+  addMdnsErrorListener,
+  addMdnsServiceFoundListener,
+  addMdnsServiceLostListener,
+  startMdnsBrowse,
+  stopMdnsBrowse,
+  type DiscoveredService,
+} from "./modules/invx-mdns/src";
+import {
+  addShareFilesListener,
   addShareListener,
+  clearSharedFiles,
   clearSharedText,
+  getSharedFiles,
   getSharedText,
+  readSharedFileBase64,
 } from "./modules/invx-share/src";
+import {
+  addNotificationMirrorListener,
+  isNotifyListenerGranted,
+  isNotifyMirrorEnabled,
+  openNotifyListenerSettings,
+  setNotifyMirrorEnabled,
+} from "./modules/invx-notify/src";
+import { startTermuxRunCommand } from "./modules/invx-termux/src";
+import {
+  appendClipboardHistory,
+  loadClipboardHistory,
+  type ClipboardHistoryEntry,
+} from "./src/clipboardHistory";
 import {
   type StoredDeviceKeys,
   type StoredPeer,
@@ -37,6 +63,7 @@ import {
   savePeer,
 } from "./src/identity";
 import { MobileSession } from "./src/session";
+import { allowlistedRunSpec } from "./src/termux";
 import { type TransportMode, defaultTransport } from "./src/transport";
 
 Notifications.setNotificationHandler({
@@ -49,6 +76,8 @@ Notifications.setNotificationHandler({
     }),
 });
 
+type PendingFile = { uri: string; name: string; mimeType: string };
+
 export default function App() {
   const [identity, setIdentity] = useState<StoredDeviceKeys | null>(null);
   const [peer, setPeer] = useState<StoredPeer | null>(null);
@@ -59,12 +88,27 @@ export default function App() {
   const [status, setStatus] = useState("idle");
   const [logs, setLogs] = useState<string[]>([]);
   const [pairingJson, setPairingJson] = useState("");
+  const [nearby, setNearby] = useState<DiscoveredService[]>([]);
+  const [history, setHistory] = useState<ClipboardHistoryEntry[]>([]);
+  const [showAdvanced, setShowAdvanced] = useState(false);
+  const [pendingFiles, setPendingFiles] = useState<PendingFile[]>([]);
+  const [pairingBusy, setPairingBusy] = useState(false);
+  const [mirrorNotifs, setMirrorNotifs] = useState(false);
+  const [listenerGranted, setListenerGranted] = useState(false);
   const sessionRef = useRef<MobileSession | null>(null);
 
   const log = useCallback((line: string) => {
     const stamp = new Date().toLocaleTimeString();
     setLogs((prev) => [`[${stamp}] ${line}`, ...prev].slice(0, 60));
   }, []);
+
+  const pushHistory = useCallback(
+    async (text: string, direction: ClipboardHistoryEntry["direction"]) => {
+      const next = await appendClipboardHistory(text, direction);
+      setHistory(next);
+    },
+    [],
+  );
 
   const openUrlViaNotification = useCallback(
     async (url: string) => {
@@ -92,8 +136,25 @@ export default function App() {
         if (stored.host) setHost(stored.host);
         if (stored.port) setPort(String(stored.port));
       }
+      setHistory(await loadClipboardHistory());
+      setMirrorNotifs(await isNotifyMirrorEnabled());
+      setListenerGranted(await isNotifyListenerGranted());
     })();
   }, []);
+
+  useEffect(() => {
+    const sub = addNotificationMirrorListener((note) => {
+      const s = sessionRef.current;
+      if (!s?.isOpen) return;
+      try {
+        s.sendNotificationMirror(note);
+        log(`notif → PC: ${note.title}`);
+      } catch (e) {
+        log(`notif mirror failed: ${String(e)}`);
+      }
+    });
+    return () => sub.remove();
+  }, [log]);
 
   useEffect(() => {
     if (!identity) return;
@@ -113,7 +174,6 @@ export default function App() {
     if (!identity) return null;
     const s = new MobileSession(identity, {
       onShareUrl: async (url) => {
-        // Background cannot start activities freely — notify then open if possible.
         await openUrlViaNotification(url);
         try {
           await Linking.openURL(url);
@@ -123,14 +183,84 @@ export default function App() {
       },
       onClipboard: async (text) => {
         await Clipboard.setStringAsync(text);
+        await pushHistory(text, "in");
         log("clipboard set from desktop");
+      },
+      onTermuxOpenUrl: async (url) => {
+        try {
+          const ok = await startTermuxRunCommand(
+            allowlistedRunSpec({ command: "open-url", url }),
+          );
+          log(ok ? `termux open-url ${url}` : "termux open-url denied");
+          if (!ok) {
+            await openUrlViaNotification(url);
+            try {
+              await Linking.openURL(url);
+            } catch {
+              /* notification fallback */
+            }
+          }
+        } catch (e) {
+          log(`termux open-url failed: ${String(e)}`);
+          await openUrlViaNotification(url);
+        }
+      },
+      onTermuxClipboardSet: async (text) => {
+        try {
+          const ok = await startTermuxRunCommand(
+            allowlistedRunSpec({ command: "clipboard-set", text }),
+          );
+          if (ok) {
+            await pushHistory(text, "in");
+            log("termux clipboard-set");
+            return;
+          }
+          log("termux clipboard denied — using Expo clipboard");
+        } catch (e) {
+          log(`termux clipboard failed: ${String(e)}`);
+        }
+        await Clipboard.setStringAsync(text);
+        await pushHistory(text, "in");
+      },
+      onFileTransfer: (file) => {
+        log(`recv file ${file.name} (${file.size} B) — open on desktop`);
+      },
+      onPairAccept: async (accept) => {
+        const next: StoredPeer = {
+          deviceId: accept.device.deviceId,
+          name: accept.device.name,
+          deviceType: accept.device.type,
+          ed25519PublicKey: accept.device.ed25519PublicKey,
+          x25519PublicKey: accept.device.x25519PublicKey,
+          host: accept.host,
+          port: accept.port,
+        };
+        await savePeer(next);
+        setPeer(next);
+        if (accept.host) setHost(accept.host);
+        if (accept.port) setPort(String(accept.port));
+        s.setPeer(next);
+        setPairingBusy(false);
+        log(`paired ${next.name} (${deviceFingerprint(accept.device)})`);
+        const transport = {
+          ...defaultTransport(accept.host ?? host),
+          mode: "lan" as const,
+          host: accept.host ?? host,
+          port: accept.port || DEFAULT_PORT,
+        };
+        s.connect(transport);
+        void startKeepalive("involvex Sync", `LAN ${transport.host}`);
+      },
+      onPairReject: (reason) => {
+        setPairingBusy(false);
+        log(`pair rejected${reason ? `: ${reason}` : ""}`);
       },
       onStatus: setStatus,
       onLog: log,
     });
     sessionRef.current = s;
     return s;
-  }, [identity, log, openUrlViaNotification]);
+  }, [identity, log, openUrlViaNotification, pushHistory, host]);
 
   useEffect(() => {
     if (session && peer) session.setPeer(peer);
@@ -149,13 +279,51 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    void startMdnsBrowse();
+    const found = addMdnsServiceFoundListener((svc) => {
+      setNearby((prev) => {
+        const without = prev.filter(
+          (p) => p.deviceId !== svc.deviceId || p.host !== svc.host,
+        );
+        return [...without, svc].sort((a, b) => a.name.localeCompare(b.name));
+      });
+    });
+    const lost = addMdnsServiceLostListener((svc) => {
+      setNearby((prev) =>
+        prev.filter(
+          (p) =>
+            (svc.deviceId ? p.deviceId !== svc.deviceId : true) &&
+            p.name !== svc.name,
+        ),
+      );
+    });
+    const err = addMdnsErrorListener((e) => log(`mdns: ${e.message}`));
+    return () => {
+      found.remove();
+      lost.remove();
+      err.remove();
+      void stopMdnsBrowse();
+    };
+  }, [log]);
+
+  useEffect(() => {
     const sub = addShareListener((text) => {
       void handleSharedText(text);
+    });
+    const filesSub = addShareFilesListener((files) => {
+      setPendingFiles(files);
+      log(`share received ${files.length} file(s)`);
     });
     void getSharedText().then((text) => {
       if (text) void handleSharedText(text);
     });
-    return () => sub.remove();
+    void getSharedFiles().then((files) => {
+      if (files.length) setPendingFiles(files);
+    });
+    return () => {
+      sub.remove();
+      filesSub.remove();
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -165,15 +333,39 @@ export default function App() {
     try {
       if (looksLikeUrl(text)) {
         s.sendShareUrl(text);
-        log("shared url -> desktop");
+        await pushHistory(text, "out");
+        log("shared url → desktop");
       } else {
         s.sendClipboard(text);
+        await pushHistory(text, "out");
         log("shared text → desktop clipboard");
       }
       await clearSharedText();
     } catch (e) {
-      log(`share failed: ${String(e)}`);
+      log(`share failed: ${String(e)} — connect first`);
     }
+  }
+
+  async function sendPendingFiles(): Promise<void> {
+    const s = sessionRef.current;
+    if (!s || !s.isOpen) {
+      log("connect before sending files");
+      return;
+    }
+    for (const file of pendingFiles) {
+      try {
+        const bytes = await readSharedFileBase64(
+          file.uri,
+          MAX_FILE_TRANSFER_BYTES,
+        );
+        s.sendFile(bytes);
+        log(`sent file ${bytes.name} (${bytes.size} B)`);
+      } catch (e) {
+        log(`file ${file.name}: ${String(e)}`);
+      }
+    }
+    setPendingFiles([]);
+    await clearSharedFiles();
   }
 
   function connect(): void {
@@ -195,6 +387,32 @@ export default function App() {
     session?.disconnect();
     void stopKeepalive();
     setStatus("idle");
+  }
+
+  function pairWithNearby(svc: DiscoveredService): void {
+    if (!session) return;
+    setPairingBusy(true);
+    setHost(svc.host);
+    setPort(String(svc.port));
+    log(`pairing with ${svc.name} @ ${svc.host}:${svc.port}`);
+    session.connect(
+      {
+        mode: "lan",
+        host: svc.host,
+        port: svc.port,
+        relayUrl: defaultTransport("").relayUrl,
+      },
+      { pairing: true },
+    );
+    setTimeout(() => {
+      setPairingBusy((busy) => {
+        if (busy) {
+          log("pair timed out — accept on the PC?");
+          return false;
+        }
+        return busy;
+      });
+    }, 30_000);
   }
 
   async function onPair(): Promise<void> {
@@ -226,15 +444,47 @@ export default function App() {
     log("unpaired");
   }
 
+  async function copyPairingJson(): Promise<void> {
+    if (!pairingJson) return;
+    await Clipboard.setStringAsync(pairingJson);
+    log("pairing JSON copied");
+  }
+
   async function sendClipboardLink(): Promise<void> {
     const text = await Clipboard.getStringAsync();
     const url = parseAllowedUrl(text);
     if (!url) {
-      log("clipboard has no http(s) url");
+      if (text) {
+        try {
+          sessionRef.current?.sendClipboard(text);
+          await pushHistory(text, "out");
+          log("sent clipboard text");
+        } catch (e) {
+          log(`send failed: ${String(e)}`);
+        }
+      } else {
+        log("clipboard empty");
+      }
       return;
     }
     sessionRef.current?.sendShareUrl(url);
+    await pushHistory(url, "out");
     log(`sent ${url}`);
+  }
+
+  async function resendHistory(entry: ClipboardHistoryEntry): Promise<void> {
+    try {
+      const url = parseAllowedUrl(entry.text);
+      if (url) {
+        sessionRef.current?.sendShareUrl(url);
+      } else {
+        sessionRef.current?.sendClipboard(entry.text);
+      }
+      await pushHistory(entry.text, "out");
+      log("resent from history");
+    } catch (e) {
+      log(`resend failed: ${String(e)}`);
+    }
   }
 
   useEffect(() => {
@@ -243,152 +493,312 @@ export default function App() {
         void getSharedText().then((text) => {
           if (text) void handleSharedText(text);
         });
+        void getSharedFiles().then((files) => {
+          if (files.length) setPendingFiles(files);
+        });
       }
     });
     return () => sub.remove();
   });
 
+  const fp = identity
+    ? deviceFingerprint({
+        deviceId: identity.deviceId,
+        name: identity.name,
+        type: "android",
+        ed25519PublicKey: identity.ed25519.publicKey,
+        x25519PublicKey: identity.x25519.publicKey,
+      })
+    : "";
+
   return (
-    <SafeAreaView style={styles.root}>
-      <StatusBar style="light" />
-      <ScrollView contentContainerStyle={styles.content}>
-        <Text style={styles.title}>involvex Sync</Text>
-        <Text style={styles.muted}>Status: {status}</Text>
+    <SafeAreaProvider>
+      <SafeAreaView style={styles.root}>
+        <StatusBar style="light" />
+        <ScrollView contentContainerStyle={styles.content}>
+          <View style={styles.headerRow}>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.title}>involvex Sync</Text>
+              <Text style={styles.muted}>Status: {status}</Text>
+            </View>
+            {peer ? (
+              <View style={styles.peerChip}>
+                <Text style={styles.peerChipText} numberOfLines={1}>
+                  {peer.name}
+                </Text>
+              </View>
+            ) : null}
+          </View>
 
-        <View style={styles.card}>
-          <Text style={styles.h2}>This phone</Text>
-          {identity ? (
-            <>
-              <Text style={styles.body}>{identity.name}</Text>
-              <Text style={styles.mono}>{identity.deviceId}</Text>
-              <Text style={styles.mono}>
-                fp{" "}
-                {deviceFingerprint({
-                  deviceId: identity.deviceId,
-                  name: identity.name,
-                  type: "android",
-                  ed25519PublicKey: identity.ed25519.publicKey,
-                  x25519PublicKey: identity.x25519.publicKey,
-                })}
-              </Text>
-              <Text style={styles.label}>
-                Pairing JSON (paste into desktop)
-              </Text>
-              <TextInput
-                style={[styles.input, styles.multiline]}
-                multiline
-                value={pairingJson}
-                editable={false}
-              />
-            </>
-          ) : (
-            <Text style={styles.muted}>Loading…</Text>
-          )}
-        </View>
+          <View style={styles.card}>
+            <Text style={styles.h2}>This phone</Text>
+            {identity ? (
+              <>
+                <Text style={styles.body}>{identity.name}</Text>
+                <Text style={styles.mono}>fp {fp}</Text>
+              </>
+            ) : (
+              <Text style={styles.muted}>Loading…</Text>
+            )}
+          </View>
 
-        <View style={styles.card}>
-          <Text style={styles.h2}>Desktop peer</Text>
-          {peer ? (
-            <>
-              <Text style={styles.body}>
-                {peer.name} ({peer.deviceType})
+          <View style={styles.card}>
+            <View style={styles.headerRow}>
+              <Text style={styles.h2}>Nearby devices</Text>
+              <Pressable
+                style={styles.btnGhostSm}
+                onPress={() => {
+                  void stopMdnsBrowse().then(() => startMdnsBrowse());
+                  log("rescanning LAN…");
+                }}
+              >
+                <Text style={styles.btnTextSm}>Rescan</Text>
+              </Pressable>
+            </View>
+            {nearby.length === 0 ? (
+              <Text style={styles.muted}>
+                Looking for PCs advertising _invxconnect._tcp…
               </Text>
+            ) : (
+              nearby.map((svc) => (
+                <View
+                  key={`${svc.deviceId}-${svc.host}`}
+                  style={styles.nearbyRow}
+                >
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.body}>{svc.name}</Text>
+                    <Text style={styles.mono}>
+                      {svc.host}:{svc.port}
+                    </Text>
+                  </View>
+                  <Pressable
+                    style={styles.btn}
+                    disabled={pairingBusy}
+                    onPress={() => pairWithNearby(svc)}
+                  >
+                    <Text style={styles.btnText}>
+                      {pairingBusy ? "…" : "Pair"}
+                    </Text>
+                  </Pressable>
+                </View>
+              ))
+            )}
+            {peer ? (
               <Pressable
                 style={styles.btnGhost}
                 onPress={() => void onUnpair()}
               >
-                <Text style={styles.btnText}>Unpair</Text>
+                <Text style={styles.btnText}>Unpair {peer.name}</Text>
               </Pressable>
-            </>
-          ) : (
-            <Text style={styles.muted}>Paste desktop QR JSON to pair.</Text>
-          )}
-          <TextInput
-            style={[styles.input, styles.multiline]}
-            multiline
-            placeholder='{"kind":"involvex-sync-pair",...}'
-            placeholderTextColor="#6b7c99"
-            value={pairPaste}
-            onChangeText={setPairPaste}
-          />
-          <Pressable style={styles.btn} onPress={() => void onPair()}>
-            <Text style={styles.btnText}>Pair</Text>
-          </Pressable>
-        </View>
+            ) : null}
+          </View>
 
-        <View style={styles.card}>
-          <Text style={styles.h2}>Transport</Text>
-          <View style={styles.row}>
-            {(["lan", "relay", "myfritz"] as TransportMode[]).map((m) => (
+          {pendingFiles.length > 0 ? (
+            <View style={styles.card}>
+              <Text style={styles.h2}>Pending share</Text>
+              {pendingFiles.map((f) => (
+                <Text key={f.uri} style={styles.mono}>
+                  {f.name} ({f.mimeType})
+                </Text>
+              ))}
               <Pressable
-                key={m}
-                style={[styles.chip, mode === m && styles.chipOn]}
-                onPress={() => setMode(m)}
+                style={styles.btn}
+                onPress={() => void sendPendingFiles()}
               >
-                <Text style={styles.chipText}>{m}</Text>
+                <Text style={styles.btnText}>Send when connected</Text>
               </Pressable>
+            </View>
+          ) : null}
+
+          <View style={styles.card}>
+            <Text style={styles.h2}>Notification sync</Text>
+            <Text style={styles.muted}>
+              Mirror phone notifications to the PC (off by default). Requires
+              Notification access in Android settings.
+            </Text>
+            <Pressable
+              style={[styles.btn, mirrorNotifs && styles.chipOn]}
+              onPress={() => {
+                void (async () => {
+                  const next = !mirrorNotifs;
+                  if (next && !(await isNotifyListenerGranted())) {
+                    log("enable Notification access for involvex Sync");
+                    await openNotifyListenerSettings();
+                    setListenerGranted(await isNotifyListenerGranted());
+                    return;
+                  }
+                  await setNotifyMirrorEnabled(next);
+                  setMirrorNotifs(next);
+                  setListenerGranted(await isNotifyListenerGranted());
+                  log(
+                    next ? "notification mirror on" : "notification mirror off",
+                  );
+                })();
+              }}
+            >
+              <Text style={styles.btnText}>
+                {mirrorNotifs ? "Mirroring on" : "Mirror to PC: off"}
+              </Text>
+            </Pressable>
+            <Pressable
+              style={styles.btnGhost}
+              onPress={() => {
+                void openNotifyListenerSettings().then(async () => {
+                  setListenerGranted(await isNotifyListenerGranted());
+                });
+              }}
+            >
+              <Text style={styles.btnText}>
+                {listenerGranted
+                  ? "Notification access granted"
+                  : "Open Notification access"}
+              </Text>
+            </Pressable>
+          </View>
+
+          <View style={styles.card}>
+            <Text style={styles.h2}>Clipboard history</Text>
+            {history.length === 0 ? (
+              <Text style={styles.muted}>Nothing yet.</Text>
+            ) : (
+              history.slice(0, 12).map((entry) => (
+                <View key={entry.id} style={styles.historyRow}>
+                  <Pressable
+                    style={{ flex: 1 }}
+                    onPress={() =>
+                      void Clipboard.setStringAsync(entry.text).then(() =>
+                        log("copied from history"),
+                      )
+                    }
+                  >
+                    <Text style={styles.historyText} numberOfLines={2}>
+                      [{entry.direction}] {entry.text}
+                    </Text>
+                  </Pressable>
+                  <Pressable
+                    style={styles.btnGhostSm}
+                    onPress={() => void resendHistory(entry)}
+                  >
+                    <Text style={styles.btnTextSm}>Send</Text>
+                  </Pressable>
+                </View>
+              ))
+            )}
+          </View>
+
+          <View style={styles.card}>
+            <Text style={styles.h2}>Transport</Text>
+            <View style={styles.row}>
+              {(["lan", "relay", "myfritz"] as TransportMode[]).map((m) => (
+                <Pressable
+                  key={m}
+                  style={[styles.chip, mode === m && styles.chipOn]}
+                  onPress={() => setMode(m)}
+                >
+                  <Text style={styles.chipText}>{m}</Text>
+                </Pressable>
+              ))}
+            </View>
+            {mode !== "relay" ? (
+              <>
+                <Text style={styles.label}>Host</Text>
+                <TextInput
+                  style={styles.input}
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                  placeholder="192.168.1.10"
+                  placeholderTextColor="#6b7c99"
+                  value={host}
+                  onChangeText={setHost}
+                />
+                <Text style={styles.label}>Port</Text>
+                <TextInput
+                  style={styles.input}
+                  keyboardType="number-pad"
+                  value={port}
+                  onChangeText={setPort}
+                />
+              </>
+            ) : (
+              <Text style={styles.muted}>
+                Uses wss://sync.involvex.workers.dev
+              </Text>
+            )}
+            <View style={styles.row}>
+              <Pressable style={styles.btn} onPress={connect}>
+                <Text style={styles.btnText}>Connect</Text>
+              </Pressable>
+              <Pressable style={styles.btnGhost} onPress={disconnect}>
+                <Text style={styles.btnText}>Disconnect</Text>
+              </Pressable>
+            </View>
+            <Pressable
+              style={styles.btn}
+              onPress={() => void sendClipboardLink()}
+            >
+              <Text style={styles.btnText}>Send clipboard</Text>
+            </Pressable>
+          </View>
+
+          <View style={styles.card}>
+            <Pressable onPress={() => setShowAdvanced((v) => !v)}>
+              <Text style={styles.h2}>Advanced {showAdvanced ? "▾" : "▸"}</Text>
+            </Pressable>
+            {showAdvanced ? (
+              <>
+                <Text style={styles.label}>Your pairing JSON</Text>
+                <TextInput
+                  style={[styles.input, styles.multiline]}
+                  multiline
+                  value={pairingJson}
+                  editable={false}
+                  selectTextOnFocus
+                  showSoftInputOnFocus={false}
+                />
+                <Pressable
+                  style={styles.btn}
+                  onPress={() => void copyPairingJson()}
+                >
+                  <Text style={styles.btnText}>Copy pairing JSON</Text>
+                </Pressable>
+                <Text style={styles.label}>Paste desktop JSON</Text>
+                <TextInput
+                  style={[styles.input, styles.multiline]}
+                  multiline
+                  placeholder='{"kind":"involvex-sync-pair",...}'
+                  placeholderTextColor="#6b7c99"
+                  value={pairPaste}
+                  onChangeText={setPairPaste}
+                />
+                <Pressable style={styles.btn} onPress={() => void onPair()}>
+                  <Text style={styles.btnText}>Pair from JSON</Text>
+                </Pressable>
+              </>
+            ) : null}
+          </View>
+
+          <View style={styles.card}>
+            <Text style={styles.h2}>Activity</Text>
+            {logs.map((line) => (
+              <Text key={line} style={styles.mono}>
+                {line}
+              </Text>
             ))}
           </View>
-          {mode !== "relay" ? (
-            <>
-              <Text style={styles.label}>Host (LAN IP or myfritz)</Text>
-              <TextInput
-                style={styles.input}
-                autoCapitalize="none"
-                autoCorrect={false}
-                placeholder="192.168.1.10 or involvex.myfritz.link"
-                placeholderTextColor="#6b7c99"
-                value={host}
-                onChangeText={setHost}
-              />
-              <Text style={styles.label}>Port</Text>
-              <TextInput
-                style={styles.input}
-                keyboardType="number-pad"
-                value={port}
-                onChangeText={setPort}
-              />
-            </>
-          ) : (
-            <Text style={styles.muted}>
-              Uses wss://sync.involvex.workers.dev (ciphertext only).
-            </Text>
-          )}
-          <View style={styles.row}>
-            <Pressable style={styles.btn} onPress={connect}>
-              <Text style={styles.btnText}>Connect</Text>
-            </Pressable>
-            <Pressable style={styles.btnGhost} onPress={disconnect}>
-              <Text style={styles.btnText}>Disconnect</Text>
-            </Pressable>
-          </View>
-          <Pressable
-            style={styles.btn}
-            onPress={() => void sendClipboardLink()}
-          >
-            <Text style={styles.btnText}>Send clipboard URL</Text>
-          </Pressable>
-          <Text style={styles.muted}>
-            Or use Android Share → involvex Sync while connected.
-          </Text>
-        </View>
-
-        <View style={styles.card}>
-          <Text style={styles.h2}>Activity</Text>
-          {logs.map((line) => (
-            <Text key={line} style={styles.mono}>
-              {line}
-            </Text>
-          ))}
-        </View>
-      </ScrollView>
-    </SafeAreaView>
+        </ScrollView>
+      </SafeAreaView>
+    </SafeAreaProvider>
   );
 }
 
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: "#0b1220" },
   content: { padding: 16, gap: 12 },
+  headerRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+  },
   title: {
     color: "#e8eef8",
     fontSize: 28,
@@ -423,6 +833,29 @@ const styles = StyleSheet.create({
   },
   multiline: { minHeight: 96, textAlignVertical: "top" },
   row: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
+  nearbyRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    paddingVertical: 4,
+  },
+  historyRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: "rgba(120,150,200,0.2)",
+    paddingTop: 8,
+  },
+  historyText: { color: "#c8d6ec", fontSize: 13 },
+  peerChip: {
+    backgroundColor: "#243352",
+    borderRadius: 999,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    maxWidth: 140,
+  },
+  peerChipText: { color: "#e8eef8", fontWeight: "600", fontSize: 12 },
   btn: {
     backgroundColor: "#3d7eff",
     borderRadius: 8,
@@ -435,7 +868,14 @@ const styles = StyleSheet.create({
     paddingHorizontal: 14,
     paddingVertical: 10,
   },
+  btnGhostSm: {
+    backgroundColor: "#243352",
+    borderRadius: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+  },
   btnText: { color: "white", fontWeight: "700" },
+  btnTextSm: { color: "white", fontWeight: "600", fontSize: 12 },
   chip: {
     backgroundColor: "#1a2740",
     borderRadius: 999,

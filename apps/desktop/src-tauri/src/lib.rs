@@ -11,7 +11,7 @@ use std::sync::Arc;
 use tauri::{
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    AppHandle, Manager, State,
+    AppHandle, Manager, RunEvent, State, WindowEvent,
 };
 use ws::WsHub;
 
@@ -103,6 +103,45 @@ fn ensure_firewall_rule() -> Result<String, String> {
     firewall::ensure_private_inbound_rule(DEFAULT_PORT)
 }
 
+#[tauri::command]
+fn save_incoming_file(
+    name: String,
+    data_base64: String,
+) -> Result<String, String> {
+    use base64::Engine;
+    use std::fs;
+    use std::path::PathBuf;
+
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(data_base64.trim())
+        .map_err(|e| format!("base64: {e}"))?;
+
+    let safe_name = name
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '.' || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>();
+    let safe_name = if safe_name.is_empty() {
+        format!("file-{}.bin", uuid::Uuid::new_v4())
+    } else {
+        safe_name
+    };
+
+    let dir: PathBuf = dirs::download_dir()
+        .or_else(dirs::home_dir)
+        .ok_or_else(|| "no download dir".to_string())?
+        .join("involvex-Sync");
+    fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let path = dir.join(&safe_name);
+    fs::write(&path, bytes).map_err(|e| e.to_string())?;
+    Ok(path.to_string_lossy().to_string())
+}
+
 fn show_main_window(app: &AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.show();
@@ -173,7 +212,34 @@ pub fn run() {
             clear_peer,
             start_mdns,
             ensure_firewall_rule,
+            save_incoming_file,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app, event| match event {
+            RunEvent::WindowEvent {
+                label,
+                event: WindowEvent::CloseRequested { api, .. },
+                ..
+            } if label == "main" => {
+                api.prevent_close();
+                if let Some(window) = app.get_webview_window("main") {
+                    let _ = window.hide();
+                }
+            }
+            RunEvent::WindowEvent {
+                label,
+                event: WindowEvent::Resized(_),
+                ..
+            } if label == "main" => {
+                // Hide to tray when the user minimizes (Windows taskbar).
+                if let Some(window) = app.get_webview_window("main") {
+                    if window.is_minimized().unwrap_or(false) {
+                        let _ = window.hide();
+                        let _ = window.unminimize();
+                    }
+                }
+            }
+            _ => {}
+        });
 }

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { LoopGuard } from "./loop.js";
+import { LoopGuard } from "./loop";
 
 describe("LoopGuard", () => {
   test("skips outbound after remote apply", () => {

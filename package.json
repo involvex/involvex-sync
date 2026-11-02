@@ -16,10 +16,9 @@
     "desktop:build": "bun run --filter @involvex/desktop tauri build",
     "mobile:start": "bun run --filter @involvex/mobile start",
     "mobile:build": "bun run --filter @involvex/mobile build",
-    "mobile:android": "bun run --filter @involvex/mobile android",
+    "android": "bun run --filter @involvex/mobile android",
     "relay:dev": "bun run --filter @involvex/relay dev",
-    "relay:deploy": "bun run --filter @involvex/relay deploy",
-    "relay:build": "bun run --filter @involvex/relay build"
+    "relay:deploy": "bun run --filter @involvex/relay deploy"
   },
   "devDependencies": {
     "typescript": "^5.7.3"
