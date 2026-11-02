@@ -43,5 +43,6 @@ dirs = "6"
 codegen-units = 1
 lto = true
 opt-level = 3
-panic = "abort"
+# unwind so the panic hook can write boot.log + MessageBox before exit
+panic = "unwind"
 strip = true

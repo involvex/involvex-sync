@@ -29,17 +29,20 @@ export const TermuxExtras = {
   COMMAND_LABEL: `${TERMUX_PACKAGE}.RUN_COMMAND_COMMAND_LABEL`,
 } as const;
 
-export type TermuxAllowedCommand = "open-url" | "clipboard-set";
+export type TermuxAllowedCommand = "open-url" | "clipboard-set" | "shell";
 
 export function isTermuxAllowed(
   command: string,
 ): command is TermuxAllowedCommand {
-  return command === "open-url" || command === "clipboard-set";
+  return (
+    command === "open-url" || command === "clipboard-set" || command === "shell"
+  );
 }
 
 export type TermuxRequest =
   | { command: "open-url"; url: string }
-  | { command: "clipboard-set"; text: string };
+  | { command: "clipboard-set"; text: string }
+  | { command: "shell"; script: string };
 
 export type TermuxRunCommandSpec = {
   /** Absolute path inside Termux, e.g. /data/data/.../files/usr/bin/termux-open-url */
@@ -86,6 +89,13 @@ export function allowlistedRunSpec(req: TermuxRequest): TermuxRunCommandSpec {
         arguments: [req.text],
         background: true,
         label: "involvex Sync clipboard-set",
+      };
+    case "shell":
+      return {
+        commandPath: `${usr}/bin/bash`,
+        arguments: ["-lc", req.script.slice(0, 2000)],
+        background: true,
+        label: "involvex Sync remote shell",
       };
   }
 }

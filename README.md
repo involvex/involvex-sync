@@ -60,10 +60,14 @@ bunx expo prebuild --platform android
 bun run android
 ```
 
-1. Paste the desktop pairing JSON into the phone (or vice versa).
-2. Enter the PC LAN IP (from the desktop UI) and **Connect** (mode `lan`).
-3. Share a link via Android Share → involvex Sync — the PC browser opens.
-4. Away from home: mode `relay` (Cloudflare) or `myfritz` with your forwarded host.
+1. On the phone: **Nearby → Pair** (mDNS) or **Scan PC QR** (desktop Connection tab). Accept the pair banner on the PC (OS toast + window come forward).
+2. After accept, status should read **Paired and connected**. Or paste desktop JSON under Advanced and tap **Connect**.
+3. Share a link via Android Share → involvex Sync — the PC browser opens. Send / Find / Files / Sync Keyboard need a live WebSocket (status strip: Live).
+4. Remote commands: phone **Run on PC** (PowerShell, opt-in on desktop); PC **Commands** tab for Termux (opt-in on phone) or local `adb shell`.
+5. Away from home: mode `relay` (Cloudflare) or `myfritz` with your forwarded host — not for first-time LAN pair.
+
+LAN pairing uses cleartext `ws://` (Android `usesCleartextTraffic`). Rebuild the Android
+dev client after pulling cleartext / camera plugin changes.
 
 ### Relay
 

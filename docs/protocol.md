@@ -18,10 +18,15 @@ Version: `1`
 Payload types: `share_url`, `clipboard_update`, `ping`, `pong`, `pair_ack`,
 `termux_open_url`, `termux_clipboard_set`, `file_transfer`, `file_offer`,
 `file_chunk`, `file_done`, `file_abort`, `notification_mirror`,
-`keyboard_text`, `keyboard_key`, `keyboard_status`, `find_phone`.
+`keyboard_text`, `keyboard_key`, `keyboard_status`, `find_phone`,
+`remote_command`, `remote_command_result`.
 
 Chunked files: soft cap 100 MiB, ~64 KiB decoded chunks, `sha256` on
 `file_done`. Legacy `file_transfer` remains for ≤2 MiB.
+
+Remote commands (`remote_command` / `remote_command_result`): `shell` is
+`pwsh` (phone→PC), `termux` (PC→phone via InVx Termux), or `adb` (local on
+PC only). Both sides require an explicit allow setting. Cap 2000 chars.
 
 ## Signed envelope
 

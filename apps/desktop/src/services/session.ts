@@ -6,6 +6,7 @@ import {
   type MessageBody,
   type PairRequestPayload,
   type PeerPublicKeys,
+  type RemoteShell,
   ChunkAssembler,
   buildPairAccept,
   buildPairReject,
@@ -26,12 +27,29 @@ import {
   parsePairHandshake,
   planChunkedTransferFromBase64,
   randomBytes,
+  remoteCommandBody,
+  remoteCommandResultBody,
   serializeFrame,
   shareUrlBody,
 } from "@involvex/protocol";
 import { invoke } from "@tauri-apps/api/core";
 import type { StoredPeer } from "./identity";
 import { type StoredDeviceKeys, toDeviceKeys } from "./identity";
+
+export type RemoteCommandRequest = {
+  requestId: string;
+  shell: RemoteShell;
+  command: string;
+  timeoutMs?: number;
+};
+
+export type RemoteCommandResult = {
+  requestId: string;
+  ok: boolean;
+  exitCode?: number;
+  stdout: string;
+  stderr: string;
+};
 
 export type SessionHandlers = {
   onShareUrl: (url: string, from: string) => void | Promise<void>;
@@ -56,6 +74,14 @@ export type SessionHandlers = {
   ) => void | Promise<void>;
   onKeyboardStatus?: (active: boolean) => void | Promise<void>;
   onPairRequest?: (request: PairRequestPayload) => void | Promise<void>;
+  onRemoteCommand?: (
+    request: RemoteCommandRequest,
+    from: string,
+  ) => void | Promise<void>;
+  onRemoteCommandResult?: (
+    result: RemoteCommandResult,
+    from: string,
+  ) => void | Promise<void>;
   onLog: (line: string) => void;
 };
 
@@ -243,6 +269,31 @@ export class SyncSession {
         await this.handlers.onKeyboardStatus?.(payload.active);
         break;
       }
+      case "remote_command": {
+        await this.handlers.onRemoteCommand?.(
+          {
+            requestId: payload.requestId,
+            shell: payload.shell,
+            command: payload.command,
+            timeoutMs: payload.timeoutMs,
+          },
+          body.from,
+        );
+        break;
+      }
+      case "remote_command_result": {
+        await this.handlers.onRemoteCommandResult?.(
+          {
+            requestId: payload.requestId,
+            ok: payload.ok,
+            exitCode: payload.exitCode,
+            stdout: payload.stdout,
+            stderr: payload.stderr,
+          },
+          body.from,
+        );
+        break;
+      }
       case "ping":
       case "pong":
       case "pair_ack":
@@ -354,6 +405,31 @@ export class SyncSession {
     await this.sendBody(
       findPhoneBody(this.local.deviceId, durationMs, this.peer?.deviceId),
     );
+  }
+
+  async sendRemoteCommand(cmd: {
+    requestId: string;
+    shell: RemoteShell;
+    command: string;
+    timeoutMs?: number;
+  }): Promise<void> {
+    const body = remoteCommandBody(
+      this.local.deviceId,
+      cmd,
+      this.peer?.deviceId,
+    );
+    if (!body) throw new Error("invalid remote command");
+    await this.sendBody(body);
+  }
+
+  async sendRemoteCommandResult(result: RemoteCommandResult): Promise<void> {
+    const body = remoteCommandResultBody(
+      this.local.deviceId,
+      result,
+      this.peer?.deviceId,
+    );
+    if (!body) throw new Error("invalid remote result");
+    await this.sendBody(body);
   }
 
   abortTransfer(transferId: string, reason?: string): void {

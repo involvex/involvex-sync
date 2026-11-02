@@ -11,9 +11,19 @@
 ## Trust model
 
 1. Devices generate Ed25519 + X25519 keypairs locally.
-2. Pairing exchanges public keys via QR / pasted JSON in the same room.
+2. Pairing exchanges public keys via QR / Nearby Pair / Scan PC QR / pasted JSON in the same room.
 3. Every frame is sealed (`X25519` + `XChaCha20-Poly1305`) and signed (`Ed25519`).
 4. The relay stores and forwards opaque frames only.
+
+## Pairing UX
+
+1. Phone Nearby Pair opens `ws://` and sends `pair_request`. Desktop always OS-notifies
+   and calls `show_main_window` (even when tray-hidden). Accept/Reject stays pinned.
+2. Desktop QR is the same JSON as Advanced paste; phone **Scan PC QR** uses `expo-camera`.
+3. Android allows cleartext for LAN (`usesCleartextTraffic`) so `ws://` works.
+4. Desktop frontend queues early `ws-message` events until the React session mounts.
+5. Send / Find / Sync Keyboard gate on live `peerConnected`, not only a stored peer.
+6. Relay is for away-from-home; it is not a substitute for LAN pair.
 
 ## Transport preference
 
@@ -26,6 +36,8 @@
 - Background clipboard read is blocked (Android 10+). Share sheet is the reliable path.
 - Opening a browser from the background uses a high-priority notification; tap runs `ACTION_VIEW`.
 - Keepalive uses a `dataSync` foreground service so the WebSocket can stay up.
+- Cleartext `ws://` LAN is allowed via config plugin `plugins/withCleartextTraffic.js`
+  (requires a native rebuild after change).
 
 ## Termux (allowlist)
 
@@ -54,6 +66,14 @@ InVx Termux package: `com.involvex.termux_app`.
   Windows resize race that left release builds tray-only).
 - Loopback control API on `127.0.0.1:17392` for the `isync` CLI
   (`share`, `clipboard`, `find`, `show`, `status`).
+
+## Files + remote commands
+
+- Incoming files: configurable folder (desktop path; phone Documents subfolder).
+- Desktop Files tab sends via HTML file picker; phone uses document picker /
+  Android Share.
+- `remote_command`: phone → PowerShell on PC (opt-in); PC → Termux bash on
+  phone (opt-in); PC also runs local `adb shell` without the wire protocol.
 
 ## Sync Keyboard (PC → phone)
 

@@ -1,14 +1,15 @@
+mod bootlog;
 mod control;
 mod firewall;
 mod keys;
 mod mdns;
+mod shell;
 mod ws;
 
 use keys::{StoredDeviceKeys, StoredPeer};
 use mdns::MdnsAdvertiser;
 use parking_lot::Mutex;
 use serde::Serialize;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tauri::{
     menu::{Menu, MenuItem},
@@ -22,8 +23,6 @@ const DEFAULT_PORT: u16 = 17391;
 struct AppState {
     hub: Arc<WsHub>,
     mdns: Mutex<Option<MdnsAdvertiser>>,
-    /// After startup grace, minimize may hide to tray.
-    tray_ready: Arc<AtomicBool>,
 }
 
 #[derive(Serialize)]
@@ -107,10 +106,23 @@ fn ensure_firewall_rule() -> Result<String, String> {
     firewall::ensure_private_inbound_rule(DEFAULT_PORT)
 }
 
+fn default_incoming_path() -> Result<std::path::PathBuf, String> {
+    Ok(dirs::download_dir()
+        .or_else(dirs::home_dir)
+        .ok_or_else(|| "no download dir".to_string())?
+        .join("involvex-Sync"))
+}
+
+#[tauri::command]
+fn default_incoming_dir() -> Result<String, String> {
+    Ok(default_incoming_path()?.to_string_lossy().to_string())
+}
+
 #[tauri::command]
 fn save_incoming_file(
     name: String,
     data_base64: String,
+    directory: Option<String>,
 ) -> Result<String, String> {
     use base64::Engine;
     use std::fs;
@@ -136,14 +148,27 @@ fn save_incoming_file(
         safe_name
     };
 
-    let dir: PathBuf = dirs::download_dir()
-        .or_else(dirs::home_dir)
-        .ok_or_else(|| "no download dir".to_string())?
-        .join("involvex-Sync");
+    let dir: PathBuf = match directory.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        Some(custom) => PathBuf::from(custom),
+        None => default_incoming_path()?,
+    };
     fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let path = dir.join(&safe_name);
     fs::write(&path, bytes).map_err(|e| e.to_string())?;
     Ok(path.to_string_lossy().to_string())
+}
+
+#[tauri::command]
+fn run_pwsh(command: String, timeout_ms: Option<u64>) -> Result<shell::CommandResult, String> {
+    shell::run_pwsh(&command, timeout_ms.unwrap_or(30_000))
+}
+
+#[tauri::command]
+fn run_adb_shell(
+    command: String,
+    timeout_ms: Option<u64>,
+) -> Result<shell::CommandResult, String> {
+    shell::run_adb_shell(&command, timeout_ms.unwrap_or(30_000))
 }
 
 fn show_main_window(app: &AppHandle) {
@@ -151,15 +176,61 @@ fn show_main_window(app: &AppHandle) {
         let _ = window.unminimize();
         let _ = window.show();
         let _ = window.set_focus();
+        bootlog::write("show_main_window ok");
+    } else {
+        bootlog::write("show_main_window: main window missing");
     }
+}
+
+#[tauri::command]
+fn show_main_window_cmd(app: AppHandle) -> Result<(), String> {
+    show_main_window(&app);
+    Ok(())
+}
+
+fn setup_tray(app: &tauri::App) -> tauri::Result<()> {
+    let show_i = MenuItem::with_id(app, "show", "Open involvex Sync", true, None::<&str>)?;
+    let quit_i = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
+    let menu = Menu::with_items(app, &[&show_i, &quit_i])?;
+
+    let mut builder = TrayIconBuilder::with_id("tray")
+        .menu(&menu)
+        .tooltip("involvex Sync")
+        .on_menu_event(|app, event| match event.id.as_ref() {
+            "show" => show_main_window(app),
+            "quit" => app.exit(0),
+            _ => {}
+        })
+        .on_tray_icon_event(|tray, event| {
+            if let TrayIconEvent::Click {
+                button: MouseButton::Left,
+                button_state: MouseButtonState::Up,
+                ..
+            } = event
+            {
+                show_main_window(tray.app_handle());
+            }
+        });
+
+    if let Some(icon) = app.default_window_icon() {
+        builder = builder.icon(icon.clone());
+    } else {
+        bootlog::write("warning: no default_window_icon — tray may be invisible");
+    }
+
+    let _tray = builder.build(app)?;
+    bootlog::write("tray ready");
+    Ok(())
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let hub = WsHub::new(DEFAULT_PORT);
-    let tray_ready = Arc::new(AtomicBool::new(false));
+    bootlog::install_panic_hook();
+    bootlog::write("run() start");
 
-    tauri::Builder::default()
+    let hub = WsHub::new(DEFAULT_PORT);
+
+    let app = match tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_notification::init())
@@ -170,56 +241,41 @@ pub fn run() {
         .manage(AppState {
             hub: hub.clone(),
             mdns: Mutex::new(None),
-            tray_ready: tray_ready.clone(),
         })
         .setup(move |app| {
+            bootlog::write("setup begin");
+
             let handle = app.handle().clone();
             let hub_clone = hub.clone();
             tauri::async_runtime::spawn(async move {
-                if let Err(err) = ws::start_listener(handle, hub_clone).await {
-                    eprintln!("websocket listener failed: {err}");
+                match ws::start_listener(handle, hub_clone).await {
+                    Ok(()) => bootlog::write("ws listener exited"),
+                    Err(err) => bootlog::write(&format!("websocket listener failed: {err}")),
                 }
             });
 
-            control::start(app.handle().clone(), hub.clone(), tray_ready.clone());
+            control::start(app.handle().clone(), hub.clone(), Arc::new(std::sync::atomic::AtomicBool::new(true)));
 
-            let show_i = MenuItem::with_id(app, "show", "Open involvex Sync", true, None::<&str>)?;
-            let quit_i = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&show_i, &quit_i])?;
+            match setup_tray(app) {
+                Ok(()) => {}
+                Err(err) => {
+                    // Tray must not kill the whole app — window is enough.
+                    bootlog::write(&format!("tray setup failed (continuing): {err}"));
+                }
+            }
 
-            let _tray = TrayIconBuilder::with_id("main")
-                .menu(&menu)
-                .tooltip("involvex Sync")
-                .icon(app.default_window_icon().unwrap().clone())
-                .on_menu_event(|app, event| match event.id.as_ref() {
-                    "show" => show_main_window(app),
-                    "quit" => app.exit(0),
-                    _ => {}
-                })
-                .on_tray_icon_event(|tray, event| {
-                    if let TrayIconEvent::Click {
-                        button: MouseButton::Left,
-                        button_state: MouseButtonState::Up,
-                        ..
-                    } = event
-                    {
-                        show_main_window(tray.app_handle());
-                    }
-                })
-                .build(app)?;
-
-            // Force the main window up — release builds were ending up tray-only
-            // because early Resized/minimize events hid it during cold start.
             show_main_window(app.handle());
 
-            let ready_flag = tray_ready.clone();
             let grace_handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
-                tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
                 show_main_window(&grace_handle);
-                ready_flag.store(true, Ordering::Relaxed);
+                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                show_main_window(&grace_handle);
+                bootlog::write("setup grace show done");
             });
 
+            bootlog::write("setup ok");
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -234,39 +290,37 @@ pub fn run() {
             start_mdns,
             ensure_firewall_rule,
             save_incoming_file,
+            default_incoming_dir,
+            run_pwsh,
+            run_adb_shell,
+            show_main_window_cmd,
         ])
         .build(tauri::generate_context!())
-        .expect("error while building tauri application")
-        .run(|app, event| match event {
-            RunEvent::WindowEvent {
-                label,
-                event: WindowEvent::CloseRequested { api, .. },
-                ..
-            } if label == "main" => {
+    {
+        Ok(app) => app,
+        Err(err) => {
+            let msg = format!("failed to build tauri app: {err}");
+            bootlog::write(&msg);
+            bootlog::alert("involvex Sync", &msg);
+            return;
+        }
+    };
+
+    bootlog::write("entering event loop");
+    app.run(|app, event| {
+        if let RunEvent::WindowEvent {
+            label,
+            event: WindowEvent::CloseRequested { api, .. },
+            ..
+        } = &event
+        {
+            if label == "main" {
                 api.prevent_close();
                 if let Some(window) = app.get_webview_window("main") {
                     let _ = window.hide();
+                    bootlog::write("main window hidden to tray");
                 }
             }
-            RunEvent::WindowEvent {
-                label,
-                event: WindowEvent::Resized(_),
-                ..
-            } if label == "main" => {
-                let ready = app
-                    .try_state::<AppState>()
-                    .map(|s| s.tray_ready.load(Ordering::Relaxed))
-                    .unwrap_or(false);
-                if !ready {
-                    return;
-                }
-                if let Some(window) = app.get_webview_window("main") {
-                    if window.is_minimized().unwrap_or(false) {
-                        let _ = window.hide();
-                        let _ = window.unminimize();
-                    }
-                }
-            }
-            _ => {}
-        });
+        }
+    });
 }

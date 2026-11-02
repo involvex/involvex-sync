@@ -73,7 +73,16 @@
       "./modules/invx-termux/app.plugin.js",
       "./modules/invx-mdns/app.plugin.js",
       "./modules/invx-notify/app.plugin.js",
-      "./modules/invx-ime/app.plugin.js"
+      "./modules/invx-ime/app.plugin.js",
+      "./plugins/withCleartextTraffic.js",
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "Scan the PC pairing QR code",
+          "recordAudioAndroid": false,
+          "barcodeScannerEnabled": true
+        }
+      ]
     ],
     "extra": {
       "relayUrl": "wss://sync.involvex.workers.dev/ws",

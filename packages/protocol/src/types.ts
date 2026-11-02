@@ -33,7 +33,9 @@ export type MessageType =
   | "keyboard_text"
   | "keyboard_key"
   | "keyboard_status"
-  | "find_phone";
+  | "find_phone"
+  | "remote_command"
+  | "remote_command_result";
 
 /** Max decoded file size for legacy single-shot base64 transfer (2 MiB). */
 export const MAX_FILE_TRANSFER_BYTES = 2 * 1024 * 1024;
@@ -176,6 +178,32 @@ export type FindPhonePayload = {
   durationMs: number;
 };
 
+/** Max characters for a remote shell command string. */
+export const MAX_REMOTE_COMMAND_CHARS = 2000;
+
+/** Max captured stdout/stderr returned in remote_command_result. */
+export const MAX_REMOTE_OUTPUT_CHARS = 32_000;
+
+export type RemoteShell = "pwsh" | "termux" | "adb";
+
+export type RemoteCommandPayload = {
+  type: "remote_command";
+  requestId: string;
+  shell: RemoteShell;
+  command: string;
+  /** Soft timeout hint for the executor (ms). */
+  timeoutMs?: number;
+};
+
+export type RemoteCommandResultPayload = {
+  type: "remote_command_result";
+  requestId: string;
+  ok: boolean;
+  exitCode?: number;
+  stdout: string;
+  stderr: string;
+};
+
 export type MessagePayload =
   | ShareUrlPayload
   | ClipboardUpdatePayload
@@ -193,7 +221,9 @@ export type MessagePayload =
   | KeyboardTextPayload
   | KeyboardKeyPayload
   | KeyboardStatusPayload
-  | FindPhonePayload;
+  | FindPhonePayload
+  | RemoteCommandPayload
+  | RemoteCommandResultPayload;
 
 /** Cleartext body sealed inside the encrypted frame. */
 export type MessageBody = {

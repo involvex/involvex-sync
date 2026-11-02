@@ -8,7 +8,10 @@ import {
   parseAllowedUrl,
   parsePairingQr,
 } from "@involvex/protocol";
+import { CameraView, useCameraPermissions } from "expo-camera";
 import * as Clipboard from "expo-clipboard";
+import * as DocumentPicker from "expo-document-picker";
+import * as FileSystem from "expo-file-system/legacy";
 import * as Notifications from "expo-notifications";
 import { StatusBar } from "expo-status-bar";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -19,6 +22,7 @@ import {
   Pressable,
   ScrollView,
   StyleSheet,
+  Switch,
   Text,
   TextInput,
   Vibration,
@@ -73,6 +77,12 @@ import {
   loadPeer,
   savePeer,
 } from "./src/identity";
+import {
+  loadAppSettings,
+  saveAppSettings,
+  type MobileAppSettings,
+} from "./src/appSettings";
+import { loadTransportPrefs, saveTransportPrefs } from "./src/settings";
 import { MobileSession } from "./src/session";
 import { allowlistedRunSpec } from "./src/termux";
 import { type TransportMode, defaultTransport } from "./src/transport";
@@ -102,17 +112,36 @@ export default function App() {
   const [nearby, setNearby] = useState<DiscoveredService[]>([]);
   const [history, setHistory] = useState<ClipboardHistoryEntry[]>([]);
   const [showAdvanced, setShowAdvanced] = useState(false);
+  const [showActivity, setShowActivity] = useState(false);
   const [pendingFiles, setPendingFiles] = useState<PendingFile[]>([]);
   const [pairingBusy, setPairingBusy] = useState(false);
+  const [pairingPhase, setPairingPhase] = useState<
+    "idle" | "connecting" | "waiting"
+  >("idle");
+  const [scanOpen, setScanOpen] = useState(false);
+  const [scanLocked, setScanLocked] = useState(false);
+  const [cameraPermission, requestCameraPermission] = useCameraPermissions();
   const [mirrorNotifs, setMirrorNotifs] = useState(false);
   const [listenerGranted, setListenerGranted] = useState(false);
   const [imeReceive, setImeReceive] = useState(false);
   const [imeActive, setImeActive] = useState(false);
   const [finding, setFinding] = useState(false);
+  const [appSettings, setAppSettings] = useState<MobileAppSettings>({
+    incomingFilesDir: "involvex-Sync",
+    allowRemoteTermux: false,
+  });
+  const [pwshCmd, setPwshCmd] = useState("");
+  const [cmdOutput, setCmdOutput] = useState("");
   const sessionRef = useRef<MobileSession | null>(null);
   const imeReceiveRef = useRef(false);
   const imeActiveRef = useRef(false);
+  const appSettingsRef = useRef(appSettings);
   const findTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pairTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pairingPhaseRef = useRef<"idle" | "connecting" | "waiting">("idle");
+
+  pairingPhaseRef.current = pairingPhase;
+  appSettingsRef.current = appSettings;
 
   imeReceiveRef.current = imeReceive;
   imeActiveRef.current = imeActive;
@@ -145,22 +174,43 @@ export default function App() {
     [log],
   );
 
+  const persistTransport = useCallback(
+    (patch: { mode?: TransportMode; host?: string; port?: number }) => {
+      void saveTransportPrefs({
+        mode: patch.mode ?? mode,
+        host: patch.host ?? host,
+        port: patch.port ?? (Number(port) || DEFAULT_PORT),
+      });
+    },
+    [mode, host, port],
+  );
+
   useEffect(() => {
     void (async () => {
       await Notifications.requestPermissionsAsync();
       const id = await ensureLocalIdentity("Android");
       setIdentity(id);
+      const prefs = await loadTransportPrefs();
       const stored = await loadPeer();
-      if (stored) {
-        setPeer(stored);
-        if (stored.host) setHost(stored.host);
-        if (stored.port) setPort(String(stored.port));
+      if (stored) setPeer(stored);
+      setMode(prefs.mode);
+      // Prefer saved transport host/port; fall back to last paired peer.
+      if (prefs.host) {
+        setHost(prefs.host);
+        setPort(String(prefs.port || DEFAULT_PORT));
+      } else if (stored?.host) {
+        setHost(stored.host);
+        setPort(String(stored.port || DEFAULT_PORT));
+      } else {
+        setHost("");
+        setPort(String(prefs.port || DEFAULT_PORT));
       }
       setHistory(await loadClipboardHistory());
       setMirrorNotifs(await isNotifyMirrorEnabled());
       setListenerGranted(await isNotifyListenerGranted());
       setImeReceive(await isImeReceiveEnabled());
       setImeActive(await isImeActive());
+      setAppSettings(await loadAppSettings());
     })();
   }, []);
 
@@ -285,8 +335,84 @@ export default function App() {
         await Clipboard.setStringAsync(text);
         await pushHistory(text, "in");
       },
-      onFileTransfer: (file) => {
-        log(`recv file ${file.name} (${file.size} B)`);
+      onFileTransfer: async (file) => {
+        try {
+          const root = FileSystem.documentDirectory;
+          if (!root) {
+            log(`recv file ${file.name} (no document dir)`);
+            return;
+          }
+          const folder =
+            appSettingsRef.current.incomingFilesDir || "involvex-Sync";
+          const dir = `${root}${folder.replace(/^\/+|\/+$/g, "")}/`;
+          await FileSystem.makeDirectoryAsync(dir, { intermediates: true });
+          const safe = file.name.replace(/[^\w.-]+/g, "_") || "file.bin";
+          const path = `${dir}${safe}`;
+          await FileSystem.writeAsStringAsync(path, file.dataBase64, {
+            encoding: FileSystem.EncodingType.Base64,
+          });
+          log(`saved file → ${path} (${file.size} B)`);
+        } catch (e) {
+          log(`file save failed: ${String(e)}`);
+        }
+      },
+      onRemoteCommand: async (request) => {
+        if (request.shell !== "termux") {
+          sessionRef.current?.sendRemoteCommandResult({
+            requestId: request.requestId,
+            ok: false,
+            stdout: "",
+            stderr: `phone only runs termux (got ${request.shell})`,
+          });
+          return;
+        }
+        if (!appSettingsRef.current.allowRemoteTermux) {
+          log("remote termux denied");
+          sessionRef.current?.sendRemoteCommandResult({
+            requestId: request.requestId,
+            ok: false,
+            stdout: "",
+            stderr: "remote Termux disabled on phone",
+          });
+          return;
+        }
+        try {
+          const ok = await startTermuxRunCommand(
+            allowlistedRunSpec({
+              command: "shell",
+              script: request.command,
+            }),
+          );
+          sessionRef.current?.sendRemoteCommandResult({
+            requestId: request.requestId,
+            ok,
+            exitCode: ok ? 0 : 1,
+            stdout: ok ? "started in Termux" : "",
+            stderr: ok ? "" : "Termux RUN_COMMAND denied or failed",
+          });
+          log(ok ? `termux started: ${request.command}` : "termux denied");
+        } catch (e) {
+          const msg = String(e);
+          sessionRef.current?.sendRemoteCommandResult({
+            requestId: request.requestId,
+            ok: false,
+            stdout: "",
+            stderr: msg,
+          });
+          log(`termux: ${msg}`);
+        }
+      },
+      onRemoteCommandResult: (result) => {
+        const text = [
+          result.ok ? "ok" : "fail",
+          result.exitCode != null ? `exit ${result.exitCode}` : "",
+          result.stdout,
+          result.stderr,
+        ]
+          .filter(Boolean)
+          .join("\n");
+        setCmdOutput(text);
+        log(`pc result: ${result.ok ? "ok" : "fail"}`);
       },
       onKeyboardText: async (text) => {
         if (!imeReceiveRef.current || !imeActiveRef.current) {
@@ -308,6 +434,10 @@ export default function App() {
         startFindPhone(durationMs);
       },
       onPairAccept: async (accept) => {
+        if (pairTimerRef.current) {
+          clearTimeout(pairTimerRef.current);
+          pairTimerRef.current = null;
+        }
         const next: StoredPeer = {
           deviceId: accept.device.deviceId,
           name: accept.device.name,
@@ -319,25 +449,54 @@ export default function App() {
         };
         await savePeer(next);
         setPeer(next);
+        const nextHost = accept.host ?? host;
+        const nextPort = accept.port || DEFAULT_PORT;
         if (accept.host) setHost(accept.host);
         if (accept.port) setPort(String(accept.port));
+        void saveTransportPrefs({
+          mode: "lan",
+          host: nextHost,
+          port: nextPort,
+        });
         s.setPeer(next);
         setPairingBusy(false);
+        setPairingPhase("idle");
         log(`paired ${next.name} (${deviceFingerprint(accept.device)})`);
         const transport = {
-          ...defaultTransport(accept.host ?? host),
+          ...defaultTransport(nextHost),
           mode: "lan" as const,
-          host: accept.host ?? host,
-          port: accept.port || DEFAULT_PORT,
+          host: nextHost,
+          port: nextPort,
         };
         s.connect(transport);
         void startKeepalive("involvex Sync", `LAN ${transport.host}`);
+        setStatus(`Paired and connected · ${next.name}`);
       },
       onPairReject: (reason) => {
+        if (pairTimerRef.current) {
+          clearTimeout(pairTimerRef.current);
+          pairTimerRef.current = null;
+        }
         setPairingBusy(false);
+        setPairingPhase("idle");
         log(`pair rejected${reason ? `: ${reason}` : ""}`);
+        setStatus("pair rejected");
       },
-      onStatus: setStatus,
+      onStatus: (nextStatus) => {
+        setStatus(nextStatus);
+        if (
+          pairingPhaseRef.current === "connecting" &&
+          nextStatus.startsWith("connected")
+        ) {
+          setPairingPhase("waiting");
+        }
+        if (
+          pairingPhaseRef.current !== "idle" &&
+          (nextStatus === "socket error" || nextStatus === "disconnected")
+        ) {
+          /* keep busy until timeout/cancel so UI can distinguish */
+        }
+      },
       onLog: log,
     });
     sessionRef.current = s;
@@ -457,13 +616,54 @@ export default function App() {
     await clearSharedFiles();
   }
 
+  function clearPairTimer(): void {
+    if (pairTimerRef.current) {
+      clearTimeout(pairTimerRef.current);
+      pairTimerRef.current = null;
+    }
+  }
+
+  function cancelPairing(): void {
+    clearPairTimer();
+    setPairingBusy(false);
+    setPairingPhase("idle");
+    session?.disconnect();
+    void stopKeepalive();
+    setStatus("idle");
+    log("pairing cancelled");
+  }
+
+  function startPairTimeout(): void {
+    clearPairTimer();
+    pairTimerRef.current = setTimeout(() => {
+      setPairingBusy((busy) => {
+        if (!busy) return busy;
+        const phase = pairingPhaseRef.current;
+        if (phase === "waiting") {
+          log("pair timed out — request reached PC; Accept on the desktop?");
+          setStatus("waiting for PC accept timed out");
+        } else {
+          log(
+            "pair timed out — could not reach PC (Wi‑Fi / cleartext / firewall?)",
+          );
+          setStatus("could not reach PC");
+        }
+        setPairingPhase("idle");
+        sessionRef.current?.disconnect();
+        return false;
+      });
+    }, 30_000);
+  }
+
   function connect(): void {
     if (!session) return;
+    const nextPort = Number(port) || DEFAULT_PORT;
+    persistTransport({ mode, host, port: nextPort });
     const transport = {
       ...defaultTransport(host),
       mode,
       host,
-      port: Number(port) || DEFAULT_PORT,
+      port: nextPort,
     };
     session.connect(transport);
     void startKeepalive(
@@ -473,6 +673,9 @@ export default function App() {
   }
 
   function disconnect(): void {
+    clearPairTimer();
+    setPairingBusy(false);
+    setPairingPhase("idle");
     session?.disconnect();
     void stopKeepalive();
     setStatus("idle");
@@ -480,10 +683,29 @@ export default function App() {
 
   function pairWithNearby(svc: DiscoveredService): void {
     if (!session) return;
-    setPairingBusy(true);
     setHost(svc.host);
     setPort(String(svc.port));
+    setMode("lan");
+    void saveTransportPrefs({
+      mode: "lan",
+      host: svc.host,
+      port: svc.port,
+    });
+    if (peer?.deviceId === svc.deviceId) {
+      log(`already paired with ${svc.name} — connecting`);
+      session.connect({
+        mode: "lan",
+        host: svc.host,
+        port: svc.port,
+        relayUrl: defaultTransport("").relayUrl,
+      });
+      void startKeepalive("involvex Sync", `LAN ${svc.host}`);
+      return;
+    }
+    setPairingBusy(true);
+    setPairingPhase("connecting");
     log(`pairing with ${svc.name} @ ${svc.host}:${svc.port}`);
+    setStatus("Waiting for PC to accept…");
     session.connect(
       {
         mode: "lan",
@@ -493,22 +715,64 @@ export default function App() {
       },
       { pairing: true },
     );
-    setTimeout(() => {
-      setPairingBusy((busy) => {
-        if (busy) {
-          log("pair timed out — accept on the PC?");
-          return false;
-        }
-        return busy;
-      });
-    }, 30_000);
+    startPairTimeout();
   }
 
-  async function onPair(): Promise<void> {
-    const parsed = parsePairingQr(pairPaste.trim());
+  async function pickAndSendFile(): Promise<void> {
+    const s = sessionRef.current;
+    if (!s?.isOpen) {
+      log("not connected — cannot send file");
+      return;
+    }
+    try {
+      const picked = await DocumentPicker.getDocumentAsync({
+        copyToCacheDirectory: true,
+        multiple: false,
+      });
+      if (picked.canceled || !picked.assets?.[0]) return;
+      const asset = picked.assets[0];
+      const dataBase64 = await FileSystem.readAsStringAsync(asset.uri, {
+        encoding: FileSystem.EncodingType.Base64,
+      });
+      const size = asset.size ?? Math.floor((dataBase64.length * 3) / 4);
+      s.sendFile({
+        name: asset.name,
+        mimeType: asset.mimeType || "application/octet-stream",
+        dataBase64,
+        size,
+      });
+      log(`sent file ${asset.name} (${size} B)`);
+    } catch (e) {
+      log(`send file: ${String(e)}`);
+    }
+  }
+
+  function runPwshOnPc(): void {
+    const s = sessionRef.current;
+    if (!s?.isOpen || !pwshCmd.trim()) {
+      log("not connected or empty command");
+      return;
+    }
+    const requestId = `${Date.now().toString(16)}`;
+    try {
+      s.sendRemoteCommand({
+        requestId,
+        shell: "pwsh",
+        command: pwshCmd.trim(),
+        timeoutMs: 30_000,
+      });
+      setCmdOutput("Waiting for PC…");
+      log(`pwsh → PC: ${pwshCmd.trim()}`);
+    } catch (e) {
+      log(`pwsh send: ${String(e)}`);
+    }
+  }
+
+  async function applyDesktopPairing(raw: string): Promise<boolean> {
+    const parsed = parsePairingQr(raw.trim());
     if (!parsed) {
       log("invalid pairing JSON");
-      return;
+      return false;
     }
     const next: StoredPeer = {
       deviceId: parsed.device.deviceId,
@@ -521,9 +785,59 @@ export default function App() {
     };
     await savePeer(next);
     setPeer(next);
+    session?.setPeer(next);
+    const nextHost = parsed.host ?? host;
+    const nextPort = parsed.port || Number(port) || DEFAULT_PORT;
     if (parsed.host) setHost(parsed.host);
     if (parsed.port) setPort(String(parsed.port));
+    setMode("lan");
+    void saveTransportPrefs({
+      mode: "lan",
+      host: nextHost,
+      port: nextPort,
+    });
     log(`paired ${next.name} (${deviceFingerprint(parsed.device)})`);
+    if (session && nextHost) {
+      session.connect({
+        ...defaultTransport(nextHost),
+        mode: "lan",
+        host: nextHost,
+        port: nextPort,
+      });
+      void startKeepalive("involvex Sync", `LAN ${nextHost}`);
+      setStatus(`Paired and connected · ${next.name}`);
+    } else {
+      setStatus(`Paired with ${next.name} — tap Connect`);
+    }
+    return true;
+  }
+
+  async function onPair(): Promise<void> {
+    await applyDesktopPairing(pairPaste);
+  }
+
+  async function openScanner(): Promise<void> {
+    if (!cameraPermission?.granted) {
+      const result = await requestCameraPermission();
+      if (!result.granted) {
+        log("camera permission denied");
+        return;
+      }
+    }
+    setScanLocked(false);
+    setScanOpen(true);
+  }
+
+  async function onScanPayload(data: string): Promise<void> {
+    if (scanLocked) return;
+    setScanLocked(true);
+    const ok = await applyDesktopPairing(data);
+    if (ok) {
+      setScanOpen(false);
+      log("scanned PC QR");
+    } else {
+      setScanLocked(false);
+    }
   }
 
   async function onUnpair(): Promise<void> {
@@ -600,6 +914,14 @@ export default function App() {
       })
     : "";
 
+  const connected =
+    status.startsWith("connected") || status.includes("connected");
+  const statusTone = connected
+    ? styles.statusLive
+    : status === "idle"
+      ? styles.statusIdle
+      : styles.statusBusy;
+
   return (
     <SafeAreaProvider>
       <SafeAreaView style={styles.root}>
@@ -615,36 +937,166 @@ export default function App() {
             </Pressable>
           </View>
         </Modal>
-        <ScrollView contentContainerStyle={styles.content}>
-          <View style={styles.headerRow}>
-            <View style={{ flex: 1 }}>
-              <Text style={styles.title}>involvex Sync</Text>
-              <Text style={styles.muted}>Status: {status}</Text>
-            </View>
-            {peer ? (
-              <View style={styles.peerChip}>
-                <Text style={styles.peerChipText} numberOfLines={1}>
-                  {peer.name}
-                </Text>
-              </View>
-            ) : null}
-          </View>
-
-          <View style={styles.card}>
-            <Text style={styles.h2}>This phone</Text>
-            {identity ? (
-              <>
-                <Text style={styles.body}>{identity.name}</Text>
-                <Text style={styles.mono}>fp {fp}</Text>
-              </>
+        <Modal visible={scanOpen} animationType="slide" transparent={false}>
+          <SafeAreaView style={styles.scanRoot}>
+            <Text style={styles.h2}>Scan PC QR</Text>
+            <Text style={styles.muted}>
+              Point at the pairing QR on the desktop Connection tab.
+            </Text>
+            {cameraPermission?.granted ? (
+              <CameraView
+                style={styles.scanCamera}
+                facing="back"
+                barcodeScannerSettings={{ barcodeTypes: ["qr"] }}
+                onBarcodeScanned={(result) => {
+                  if (result.data) void onScanPayload(result.data);
+                }}
+              />
             ) : (
-              <Text style={styles.muted}>Loading…</Text>
+              <Text style={styles.muted}>Camera permission required.</Text>
+            )}
+            <Pressable
+              style={styles.btnGhost}
+              onPress={() => setScanOpen(false)}
+            >
+              <Text style={styles.btnText}>Cancel</Text>
+            </Pressable>
+          </SafeAreaView>
+        </Modal>
+        <ScrollView
+          contentContainerStyle={styles.content}
+          keyboardShouldPersistTaps="handled"
+        >
+          <View style={styles.hero}>
+            <View style={styles.heroGlow} />
+            <Text style={styles.brand}>involvex</Text>
+            <Text style={styles.title}>Sync</Text>
+            <View style={styles.statusRow}>
+              <View style={[styles.statusDot, statusTone]} />
+              <Text style={styles.statusText} numberOfLines={1}>
+                {status}
+              </Text>
+              {peer ? (
+                <View style={styles.peerChip}>
+                  <Text style={styles.peerChipText} numberOfLines={1}>
+                    {peer.name}
+                  </Text>
+                </View>
+              ) : null}
+            </View>
+            {identity ? (
+              <Text style={styles.monoSoft}>fp {fp}</Text>
+            ) : (
+              <Text style={styles.muted}>Loading identity…</Text>
             )}
           </View>
 
           <View style={styles.card}>
+            <Text style={styles.h2}>Connection</Text>
+            <Text style={styles.muted}>
+              Host and mode are saved on this phone.
+            </Text>
+            <View style={styles.segment}>
+              {(["lan", "relay", "myfritz"] as TransportMode[]).map((m) => (
+                <Pressable
+                  key={m}
+                  style={[styles.segmentItem, mode === m && styles.segmentOn]}
+                  onPress={() => {
+                    setMode(m);
+                    persistTransport({ mode: m });
+                  }}
+                >
+                  <Text
+                    style={[
+                      styles.segmentText,
+                      mode === m && styles.segmentTextOn,
+                    ]}
+                  >
+                    {m}
+                  </Text>
+                </Pressable>
+              ))}
+            </View>
+            {mode !== "relay" ? (
+              <View style={styles.fieldGrid}>
+                <View style={styles.fieldGrow}>
+                  <Text style={styles.label}>Host</Text>
+                  <TextInput
+                    style={styles.input}
+                    autoCapitalize="none"
+                    autoCorrect={false}
+                    placeholder="192.168.1.10"
+                    placeholderTextColor="#6b7c99"
+                    value={host}
+                    onChangeText={(value) => {
+                      setHost(value);
+                      persistTransport({ host: value });
+                    }}
+                    onEndEditing={() => persistTransport({ host })}
+                  />
+                </View>
+                <View style={styles.fieldPort}>
+                  <Text style={styles.label}>Port</Text>
+                  <TextInput
+                    style={styles.input}
+                    keyboardType="number-pad"
+                    value={port}
+                    onChangeText={(value) => {
+                      setPort(value);
+                      const n = Number(value);
+                      if (n > 0) persistTransport({ port: n });
+                    }}
+                    onEndEditing={() =>
+                      persistTransport({
+                        port: Number(port) || DEFAULT_PORT,
+                      })
+                    }
+                  />
+                </View>
+              </View>
+            ) : (
+              <Text style={styles.muted}>
+                Relay · wss://sync.involvex.workers.dev
+              </Text>
+            )}
+            <View style={styles.row}>
+              <Pressable style={[styles.btn, styles.btnFlex]} onPress={connect}>
+                <Text style={styles.btnText}>
+                  {connected ? "Reconnect" : "Connect"}
+                </Text>
+              </Pressable>
+              <Pressable
+                style={[styles.btnGhost, styles.btnFlex]}
+                onPress={disconnect}
+              >
+                <Text style={styles.btnText}>Disconnect</Text>
+              </Pressable>
+            </View>
+            <Pressable
+              style={styles.btnGhost}
+              onPress={() => void sendClipboardLink()}
+            >
+              <Text style={styles.btnText}>Send clipboard to PC</Text>
+            </Pressable>
+          </View>
+
+          {pairingBusy ? (
+            <View style={[styles.card, styles.pairWait]}>
+              <Text style={styles.h2}>Waiting for PC to accept…</Text>
+              <Text style={styles.muted}>
+                {pairingPhase === "waiting"
+                  ? "Request sent — Accept on the desktop banner."
+                  : "Connecting to the PC over LAN…"}
+              </Text>
+              <Pressable style={styles.btnGhost} onPress={cancelPairing}>
+                <Text style={styles.btnText}>Cancel</Text>
+              </Pressable>
+            </View>
+          ) : null}
+
+          <View style={styles.card}>
             <View style={styles.headerRow}>
-              <Text style={styles.h2}>Nearby devices</Text>
+              <Text style={styles.h2}>Nearby</Text>
               <Pressable
                 style={styles.btnGhostSm}
                 onPress={() => {
@@ -655,41 +1107,94 @@ export default function App() {
                 <Text style={styles.btnTextSm}>Rescan</Text>
               </Pressable>
             </View>
+            <View style={styles.row}>
+              <Pressable
+                style={[styles.btn, styles.btnFlex]}
+                onPress={() => void openScanner()}
+              >
+                <Text style={styles.btnText}>Scan PC QR</Text>
+              </Pressable>
+            </View>
             {nearby.length === 0 ? (
               <Text style={styles.muted}>
-                Looking for PCs advertising _invxconnect._tcp…
+                Searching for _invxconnect._tcp on your LAN…
               </Text>
             ) : (
-              nearby.map((svc) => (
-                <View
-                  key={`${svc.deviceId}-${svc.host}`}
-                  style={styles.nearbyRow}
-                >
-                  <View style={{ flex: 1 }}>
-                    <Text style={styles.body}>{svc.name}</Text>
-                    <Text style={styles.mono}>
-                      {svc.host}:{svc.port}
-                    </Text>
-                  </View>
-                  <Pressable
-                    style={styles.btn}
-                    disabled={pairingBusy}
-                    onPress={() => pairWithNearby(svc)}
+              nearby.map((svc) => {
+                const isPaired = peer?.deviceId === svc.deviceId;
+                return (
+                  <View
+                    key={`${svc.deviceId}-${svc.host}`}
+                    style={styles.nearbyRow}
                   >
-                    <Text style={styles.btnText}>
-                      {pairingBusy ? "…" : "Pair"}
-                    </Text>
-                  </Pressable>
-                </View>
-              ))
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.body}>
+                        {svc.name}
+                        {isPaired ? " · paired" : ""}
+                      </Text>
+                      <Text style={styles.mono}>
+                        {svc.host}:{svc.port}
+                      </Text>
+                    </View>
+                    <Pressable
+                      style={styles.btn}
+                      disabled={pairingBusy}
+                      onPress={() => pairWithNearby(svc)}
+                    >
+                      <Text style={styles.btnText}>
+                        {pairingBusy
+                          ? "…"
+                          : isPaired
+                            ? connected
+                              ? "Reconnect"
+                              : "Connect"
+                            : "Pair"}
+                      </Text>
+                    </Pressable>
+                  </View>
+                );
+              })
             )}
             {peer ? (
-              <Pressable
-                style={styles.btnGhost}
-                onPress={() => void onUnpair()}
-              >
-                <Text style={styles.btnText}>Unpair {peer.name}</Text>
+              <Pressable style={styles.linkBtn} onPress={() => void onUnpair()}>
+                <Text style={styles.linkText}>Unpair {peer.name}</Text>
               </Pressable>
+            ) : null}
+          </View>
+
+          <View style={styles.card}>
+            <Text style={styles.h2}>Files</Text>
+            <Text style={styles.muted}>
+              Saves to Documents/{appSettings.incomingFilesDir}/
+            </Text>
+            <Pressable
+              style={styles.btn}
+              onPress={() => void pickAndSendFile()}
+            >
+              <Text style={styles.btnText}>Send file to PC</Text>
+            </Pressable>
+          </View>
+
+          <View style={styles.card}>
+            <Text style={styles.h2}>Run on PC (PowerShell)</Text>
+            <Text style={styles.muted}>
+              PC must enable “Allow remote PowerShell”.
+            </Text>
+            <TextInput
+              style={[styles.input, styles.multiline]}
+              multiline
+              placeholder="Get-Date"
+              placeholderTextColor="#6b7c99"
+              value={pwshCmd}
+              onChangeText={setPwshCmd}
+            />
+            <Pressable style={styles.btn} onPress={runPwshOnPc}>
+              <Text style={styles.btnText}>Run on PC</Text>
+            </Pressable>
+            {cmdOutput ? (
+              <Text style={styles.mono} selectable>
+                {cmdOutput}
+              </Text>
             ) : null}
           </View>
 
@@ -711,81 +1216,120 @@ export default function App() {
           ) : null}
 
           <View style={styles.card}>
-            <Text style={styles.h2}>Sync Keyboard</Text>
-            <Text style={styles.muted}>
-              Receive keystrokes from the PC. Enable involvex Sync Keyboard in
-              Android input settings, then select it when typing.
-            </Text>
-            <Text style={styles.body}>
-              IME: {imeActive ? "active" : "inactive"}
-            </Text>
-            <Pressable
-              style={[styles.btn, imeReceive && styles.chipOn]}
-              onPress={() => {
-                void (async () => {
-                  const next = !imeReceive;
-                  await setImeReceiveEnabled(next);
-                  setImeReceive(next);
-                  sessionRef.current?.sendKeyboardStatus(next && imeActive);
-                  log(next ? "receive keyboard on" : "receive keyboard off");
-                })();
+            <Text style={styles.h2}>Features</Text>
+            <Text style={styles.label}>Incoming files folder</Text>
+            <TextInput
+              style={styles.input}
+              autoCapitalize="none"
+              autoCorrect={false}
+              value={appSettings.incomingFilesDir}
+              onChangeText={(value) =>
+                setAppSettings((prev) => ({
+                  ...prev,
+                  incomingFilesDir: value,
+                }))
+              }
+              onEndEditing={() => {
+                void saveAppSettings({
+                  incomingFilesDir: appSettings.incomingFilesDir,
+                }).then(setAppSettings);
               }}
-            >
-              <Text style={styles.btnText}>
-                {imeReceive
-                  ? "Receive keyboard: on"
-                  : "Receive keyboard from PC: off"}
-              </Text>
-            </Pressable>
+              placeholder="involvex-Sync"
+              placeholderTextColor="#6b7c99"
+            />
+            <View style={styles.settingRow}>
+              <View style={styles.settingCopy}>
+                <Text style={styles.body}>Allow remote Termux</Text>
+                <Text style={styles.muted}>
+                  Let the PC run bash via InVx Termux
+                </Text>
+              </View>
+              <Switch
+                value={appSettings.allowRemoteTermux}
+                onValueChange={(next) => {
+                  void saveAppSettings({ allowRemoteTermux: next }).then(
+                    setAppSettings,
+                  );
+                  log(next ? "remote termux on" : "remote termux off");
+                }}
+                trackColor={{ false: "#243352", true: "#3d7eff" }}
+                thumbColor="#e8eef8"
+              />
+            </View>
+            <View style={styles.divider} />
+            <View style={styles.settingRow}>
+              <View style={styles.settingCopy}>
+                <Text style={styles.body}>Sync Keyboard</Text>
+                <Text style={styles.muted}>
+                  IME {imeActive ? "active" : "inactive"} · enable in Android
+                  input settings
+                </Text>
+              </View>
+              <Switch
+                value={imeReceive}
+                onValueChange={(next) => {
+                  void (async () => {
+                    await setImeReceiveEnabled(next);
+                    setImeReceive(next);
+                    sessionRef.current?.sendKeyboardStatus(next && imeActive);
+                    log(next ? "receive keyboard on" : "receive keyboard off");
+                  })();
+                }}
+                trackColor={{ false: "#243352", true: "#3d7eff" }}
+                thumbColor="#e8eef8"
+              />
+            </View>
             <Pressable
-              style={styles.btnGhost}
+              style={styles.linkBtn}
               onPress={() => void openImeSettings()}
             >
-              <Text style={styles.btnText}>Open Android IME settings</Text>
+              <Text style={styles.linkText}>Open IME settings</Text>
             </Pressable>
-          </View>
-
-          <View style={styles.card}>
-            <Text style={styles.h2}>Notification sync</Text>
-            <Text style={styles.muted}>
-              Mirror phone notifications to the PC (off by default). Requires
-              Notification access in Android settings.
-            </Text>
-            <Pressable
-              style={[styles.btn, mirrorNotifs && styles.chipOn]}
-              onPress={() => {
-                void (async () => {
-                  const next = !mirrorNotifs;
-                  if (next && !(await isNotifyListenerGranted())) {
-                    log("enable Notification access for involvex Sync");
-                    await openNotifyListenerSettings();
+            <View style={styles.divider} />
+            <View style={styles.settingRow}>
+              <View style={styles.settingCopy}>
+                <Text style={styles.body}>Notification mirror</Text>
+                <Text style={styles.muted}>
+                  {listenerGranted
+                    ? "Access granted"
+                    : "Needs Notification access"}
+                </Text>
+              </View>
+              <Switch
+                value={mirrorNotifs}
+                onValueChange={(next) => {
+                  void (async () => {
+                    if (next && !(await isNotifyListenerGranted())) {
+                      log("enable Notification access for involvex Sync");
+                      await openNotifyListenerSettings();
+                      setListenerGranted(await isNotifyListenerGranted());
+                      return;
+                    }
+                    await setNotifyMirrorEnabled(next);
+                    setMirrorNotifs(next);
                     setListenerGranted(await isNotifyListenerGranted());
-                    return;
-                  }
-                  await setNotifyMirrorEnabled(next);
-                  setMirrorNotifs(next);
-                  setListenerGranted(await isNotifyListenerGranted());
-                  log(
-                    next ? "notification mirror on" : "notification mirror off",
-                  );
-                })();
-              }}
-            >
-              <Text style={styles.btnText}>
-                {mirrorNotifs ? "Mirroring on" : "Mirror to PC: off"}
-              </Text>
-            </Pressable>
+                    log(
+                      next
+                        ? "notification mirror on"
+                        : "notification mirror off",
+                    );
+                  })();
+                }}
+                trackColor={{ false: "#243352", true: "#3d7eff" }}
+                thumbColor="#e8eef8"
+              />
+            </View>
             <Pressable
-              style={styles.btnGhost}
+              style={styles.linkBtn}
               onPress={() => {
                 void openNotifyListenerSettings().then(async () => {
                   setListenerGranted(await isNotifyListenerGranted());
                 });
               }}
             >
-              <Text style={styles.btnText}>
+              <Text style={styles.linkText}>
                 {listenerGranted
-                  ? "Notification access granted"
+                  ? "Manage Notification access"
                   : "Open Notification access"}
               </Text>
             </Pressable>
@@ -822,62 +1366,12 @@ export default function App() {
           </View>
 
           <View style={styles.card}>
-            <Text style={styles.h2}>Transport</Text>
-            <View style={styles.row}>
-              {(["lan", "relay", "myfritz"] as TransportMode[]).map((m) => (
-                <Pressable
-                  key={m}
-                  style={[styles.chip, mode === m && styles.chipOn]}
-                  onPress={() => setMode(m)}
-                >
-                  <Text style={styles.chipText}>{m}</Text>
-                </Pressable>
-              ))}
-            </View>
-            {mode !== "relay" ? (
-              <>
-                <Text style={styles.label}>Host</Text>
-                <TextInput
-                  style={styles.input}
-                  autoCapitalize="none"
-                  autoCorrect={false}
-                  placeholder="192.168.1.10"
-                  placeholderTextColor="#6b7c99"
-                  value={host}
-                  onChangeText={setHost}
-                />
-                <Text style={styles.label}>Port</Text>
-                <TextInput
-                  style={styles.input}
-                  keyboardType="number-pad"
-                  value={port}
-                  onChangeText={setPort}
-                />
-              </>
-            ) : (
-              <Text style={styles.muted}>
-                Uses wss://sync.involvex.workers.dev
-              </Text>
-            )}
-            <View style={styles.row}>
-              <Pressable style={styles.btn} onPress={connect}>
-                <Text style={styles.btnText}>Connect</Text>
-              </Pressable>
-              <Pressable style={styles.btnGhost} onPress={disconnect}>
-                <Text style={styles.btnText}>Disconnect</Text>
-              </Pressable>
-            </View>
             <Pressable
-              style={styles.btn}
-              onPress={() => void sendClipboardLink()}
+              style={styles.headerRow}
+              onPress={() => setShowAdvanced((v) => !v)}
             >
-              <Text style={styles.btnText}>Send clipboard</Text>
-            </Pressable>
-          </View>
-
-          <View style={styles.card}>
-            <Pressable onPress={() => setShowAdvanced((v) => !v)}>
-              <Text style={styles.h2}>Advanced {showAdvanced ? "▾" : "▸"}</Text>
+              <Text style={styles.h2}>Advanced</Text>
+              <Text style={styles.chevron}>{showAdvanced ? "▾" : "▸"}</Text>
             </Pressable>
             {showAdvanced ? (
               <>
@@ -891,12 +1385,16 @@ export default function App() {
                   showSoftInputOnFocus={false}
                 />
                 <Pressable
-                  style={styles.btn}
+                  style={styles.btnGhost}
                   onPress={() => void copyPairingJson()}
                 >
                   <Text style={styles.btnText}>Copy pairing JSON</Text>
                 </Pressable>
                 <Text style={styles.label}>Paste desktop JSON</Text>
+                <Text style={styles.muted}>
+                  Prefer Scan PC QR above. Paste only if the camera is
+                  unavailable.
+                </Text>
                 <TextInput
                   style={[styles.input, styles.multiline]}
                   multiline
@@ -913,12 +1411,26 @@ export default function App() {
           </View>
 
           <View style={styles.card}>
-            <Text style={styles.h2}>Activity</Text>
-            {logs.map((line) => (
-              <Text key={line} style={styles.mono}>
-                {line}
+            <Pressable
+              style={styles.headerRow}
+              onPress={() => setShowActivity((v) => !v)}
+            >
+              <Text style={styles.h2}>Activity</Text>
+              <Text style={styles.chevron}>{showActivity ? "▾" : "▸"}</Text>
+            </Pressable>
+            {showActivity ? (
+              logs.map((line) => (
+                <Text key={line} style={styles.mono}>
+                  {line}
+                </Text>
+              ))
+            ) : logs[0] ? (
+              <Text style={styles.mono} numberOfLines={1}>
+                {logs[0]}
               </Text>
-            ))}
+            ) : (
+              <Text style={styles.muted}>No events yet.</Text>
+            )}
           </View>
         </ScrollView>
       </SafeAreaView>
@@ -927,101 +1439,190 @@ export default function App() {
 }
 
 const styles = StyleSheet.create({
-  root: { flex: 1, backgroundColor: "#0b1220" },
-  content: { padding: 16, gap: 12 },
-  headerRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 8,
+  root: { flex: 1, backgroundColor: "#070d18" },
+  content: { padding: 16, paddingBottom: 32, gap: 14 },
+  hero: {
+    paddingTop: 8,
+    paddingBottom: 4,
+    gap: 4,
+    overflow: "hidden",
+  },
+  heroGlow: {
+    position: "absolute",
+    top: -40,
+    right: -20,
+    width: 180,
+    height: 180,
+    borderRadius: 90,
+    backgroundColor: "rgba(61,126,255,0.18)",
+  },
+  brand: {
+    color: "#7eb0ff",
+    fontSize: 13,
+    fontWeight: "700",
+    letterSpacing: 2,
+    textTransform: "uppercase",
   },
   title: {
     color: "#e8eef8",
-    fontSize: 28,
-    fontWeight: "700",
-    letterSpacing: -0.4,
+    fontSize: 40,
+    fontWeight: "800",
+    letterSpacing: -1.2,
   },
-  muted: { color: "#9db0cc", marginTop: 4 },
-  card: {
-    backgroundColor: "rgba(18,28,48,0.95)",
-    borderRadius: 14,
-    padding: 14,
-    borderWidth: 1,
-    borderColor: "rgba(120,150,200,0.18)",
+  statusRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    marginTop: 8,
+  },
+  statusDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+  },
+  statusLive: { backgroundColor: "#3dcea2" },
+  statusIdle: { backgroundColor: "#6b7c99" },
+  statusBusy: { backgroundColor: "#f0b35a" },
+  statusText: {
+    color: "#c8d6ec",
+    fontSize: 13,
+    flexShrink: 1,
+  },
+  monoSoft: {
+    color: "#6b7c99",
+    fontFamily: "monospace",
+    fontSize: 11,
+    marginTop: 6,
+  },
+  headerRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
     gap: 8,
   },
-  h2: { color: "#e8eef8", fontSize: 17, fontWeight: "600" },
-  body: { color: "#e8eef8" },
-  label: { color: "#9db0cc", fontSize: 13, marginTop: 4 },
+  muted: { color: "#8aa0bf", fontSize: 13, lineHeight: 18 },
+  card: {
+    backgroundColor: "rgba(14,22,38,0.96)",
+    borderRadius: 18,
+    padding: 16,
+    borderWidth: 1,
+    borderColor: "rgba(120,150,200,0.14)",
+    gap: 10,
+  },
+  h2: {
+    color: "#e8eef8",
+    fontSize: 16,
+    fontWeight: "700",
+    letterSpacing: -0.2,
+  },
+  body: { color: "#e8eef8", fontSize: 15, fontWeight: "600" },
+  label: { color: "#8aa0bf", fontSize: 12, marginBottom: 4, fontWeight: "600" },
   mono: {
-    color: "#b7c7e0",
+    color: "#9db0cc",
     fontFamily: "monospace",
     fontSize: 12,
   },
   input: {
     backgroundColor: "#0a1424",
-    borderRadius: 8,
+    borderRadius: 12,
     borderWidth: 1,
-    borderColor: "rgba(120,150,200,0.28)",
+    borderColor: "rgba(120,150,200,0.22)",
     color: "#e8eef8",
-    paddingHorizontal: 10,
-    paddingVertical: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 11,
   },
   multiline: { minHeight: 96, textAlignVertical: "top" },
   row: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
+  fieldGrid: { flexDirection: "row", gap: 10 },
+  fieldGrow: { flex: 1 },
+  fieldPort: { width: 96 },
+  segment: {
+    flexDirection: "row",
+    backgroundColor: "#0a1424",
+    borderRadius: 12,
+    padding: 3,
+    gap: 2,
+  },
+  segmentItem: {
+    flex: 1,
+    alignItems: "center",
+    paddingVertical: 9,
+    borderRadius: 10,
+  },
+  segmentOn: { backgroundColor: "#3d7eff" },
+  segmentText: {
+    color: "#9db0cc",
+    fontWeight: "700",
+    fontSize: 12,
+    textTransform: "uppercase",
+  },
+  segmentTextOn: { color: "#fff" },
   nearbyRow: {
     flexDirection: "row",
     alignItems: "center",
     gap: 8,
-    paddingVertical: 4,
+    paddingVertical: 6,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: "rgba(120,150,200,0.16)",
   },
   historyRow: {
     flexDirection: "row",
     alignItems: "center",
     gap: 8,
     borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: "rgba(120,150,200,0.2)",
-    paddingTop: 8,
+    borderTopColor: "rgba(120,150,200,0.16)",
+    paddingTop: 10,
   },
   historyText: { color: "#c8d6ec", fontSize: 13 },
   peerChip: {
-    backgroundColor: "#243352",
+    backgroundColor: "rgba(61,126,255,0.2)",
     borderRadius: 999,
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    maxWidth: 140,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    maxWidth: 120,
+    marginLeft: "auto",
   },
-  peerChipText: { color: "#e8eef8", fontWeight: "600", fontSize: 12 },
+  peerChipText: { color: "#cfe0ff", fontWeight: "700", fontSize: 11 },
+  settingRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+  },
+  settingCopy: { flex: 1, gap: 2 },
+  divider: {
+    height: StyleSheet.hairlineWidth,
+    backgroundColor: "rgba(120,150,200,0.18)",
+    marginVertical: 4,
+  },
+  linkBtn: { paddingVertical: 2 },
+  linkText: { color: "#7eb0ff", fontWeight: "600", fontSize: 13 },
+  chevron: { color: "#8aa0bf", fontSize: 16 },
   btn: {
     backgroundColor: "#3d7eff",
-    borderRadius: 8,
+    borderRadius: 12,
     paddingHorizontal: 14,
-    paddingVertical: 10,
+    paddingVertical: 12,
+    alignItems: "center",
   },
+  btnFlex: { flex: 1 },
   btnGhost: {
-    backgroundColor: "#243352",
-    borderRadius: 8,
+    backgroundColor: "#182338",
+    borderRadius: 12,
     paddingHorizontal: 14,
-    paddingVertical: 10,
+    paddingVertical: 12,
+    alignItems: "center",
   },
   btnGhostSm: {
-    backgroundColor: "#243352",
-    borderRadius: 8,
+    backgroundColor: "#182338",
+    borderRadius: 10,
     paddingHorizontal: 10,
     paddingVertical: 6,
   },
   btnText: { color: "white", fontWeight: "700" },
   btnTextSm: { color: "white", fontWeight: "600", fontSize: 12 },
-  chip: {
-    backgroundColor: "#1a2740",
-    borderRadius: 999,
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-  },
-  chipOn: { backgroundColor: "#3d7eff" },
-  chipText: { color: "white", fontWeight: "600", fontSize: 13 },
   findRoot: {
     flex: 1,
-    backgroundColor: "#0b1220",
+    backgroundColor: "#070d18",
     alignItems: "center",
     justifyContent: "center",
     padding: 24,
@@ -1037,5 +1638,21 @@ const styles = StyleSheet.create({
     fontSize: 16,
     textAlign: "center",
     marginBottom: 12,
+  },
+  pairWait: {
+    borderColor: "rgba(61,126,255,0.55)",
+    backgroundColor: "rgba(61,126,255,0.12)",
+  },
+  scanRoot: {
+    flex: 1,
+    backgroundColor: "#070d18",
+    padding: 16,
+    gap: 12,
+  },
+  scanCamera: {
+    flex: 1,
+    borderRadius: 16,
+    overflow: "hidden",
+    minHeight: 320,
   },
 });

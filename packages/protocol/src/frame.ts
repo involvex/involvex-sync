@@ -14,11 +14,14 @@ import type {
   KeyboardKeyId,
   MessageBody,
   MessagePayload,
+  RemoteShell,
   WireFrame,
 } from "./types";
 import {
   KEYBOARD_KEY_IDS,
   MAX_KEYBOARD_TEXT_CHARS,
+  MAX_REMOTE_COMMAND_CHARS,
+  MAX_REMOTE_OUTPUT_CHARS,
   PROTOCOL_VERSION,
 } from "./types";
 import { parseAllowedUrl } from "./url";
@@ -294,4 +297,58 @@ export function fileAbortBody(
   to?: string,
 ): MessageBody {
   return createMessageBody(from, { type: "file_abort", ...abort }, to);
+}
+
+export function remoteCommandBody(
+  from: string,
+  cmd: {
+    requestId: string;
+    shell: RemoteShell;
+    command: string;
+    timeoutMs?: number;
+  },
+  to?: string,
+): MessageBody | null {
+  const command = cmd.command.trim().slice(0, MAX_REMOTE_COMMAND_CHARS);
+  if (!command || !cmd.requestId) return null;
+  if (cmd.shell !== "pwsh" && cmd.shell !== "termux" && cmd.shell !== "adb") {
+    return null;
+  }
+  return createMessageBody(
+    from,
+    {
+      type: "remote_command",
+      requestId: cmd.requestId,
+      shell: cmd.shell,
+      command,
+      timeoutMs: cmd.timeoutMs,
+    },
+    to,
+  );
+}
+
+export function remoteCommandResultBody(
+  from: string,
+  result: {
+    requestId: string;
+    ok: boolean;
+    exitCode?: number;
+    stdout: string;
+    stderr: string;
+  },
+  to?: string,
+): MessageBody | null {
+  if (!result.requestId) return null;
+  return createMessageBody(
+    from,
+    {
+      type: "remote_command_result",
+      requestId: result.requestId,
+      ok: result.ok,
+      exitCode: result.exitCode,
+      stdout: result.stdout.slice(0, MAX_REMOTE_OUTPUT_CHARS),
+      stderr: result.stderr.slice(0, MAX_REMOTE_OUTPUT_CHARS),
+    },
+    to,
+  );
 }

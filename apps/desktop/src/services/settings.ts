@@ -5,11 +5,17 @@ export type DesktopSettings = {
   showPhoneNotifications: boolean;
   /** Send keystrokes to the phone Sync Keyboard. Default false. */
   sendKeysToPhone: boolean;
+  /** Directory for incoming files. Empty = Downloads/involvex-Sync. */
+  incomingFilesDir: string;
+  /** Allow phone to run PowerShell on this PC. Default false. */
+  allowRemotePwsh: boolean;
 };
 
 const defaults: DesktopSettings = {
   showPhoneNotifications: false,
   sendKeysToPhone: false,
+  incomingFilesDir: "",
+  allowRemotePwsh: false,
 };
 
 export function loadSettings(): DesktopSettings {

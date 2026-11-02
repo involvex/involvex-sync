@@ -8,6 +8,8 @@ use tauri::{AppHandle, Emitter, Manager};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 
+use crate::bootlog;
+
 pub const CONTROL_PORT: u16 = 17_392;
 
 #[derive(Clone, Serialize)]
@@ -38,7 +40,9 @@ async fn serve(
     let listener = TcpListener::bind(("127.0.0.1", CONTROL_PORT))
         .await
         .map_err(|e| format!("bind 127.0.0.1:{CONTROL_PORT}: {e}"))?;
-    eprintln!("isync control listening on 127.0.0.1:{CONTROL_PORT}");
+    bootlog::write(&format!(
+        "isync control listening on 127.0.0.1:{CONTROL_PORT}"
+    ));
 
     loop {
         let (stream, _) = match listener.accept().await {
