@@ -51,14 +51,21 @@ InVx Termux package: `com.involvex.termux_app`.
 - Close / minimize hides the main window; process stays in the system tray.
 - Tray menu: Open / Quit. Left-click restores the window.
 
-## Follow-up: keyboard receiver (not implemented)
+## Sync Keyboard (PC → phone)
 
-PC types into the focused Android field as if Sync were a soft keyboard.
+1. Protocol: `keyboard_text` / `keyboard_key` (allowlisted) + optional
+   `keyboard_status` from the phone when the IME is active.
+2. Android `InputMethodService` (`invx-ime`) — user enables and selects
+   “involvex Sync Keyboard”; never auto-enable.
+3. Kill switches: phone “Receive keyboard from PC”, desktop “Send keys to phone”.
+4. Out of scope: Bluetooth HID, mouse/touchpad, gamepad.
 
-1. Protocol: `keyboard_text` / `keyboard_key` (allowlisted), gated by paired +
-   settings on both ends.
-2. Android `InputMethodService` (“involvex Sync Keyboard”) — user must select
-   it as the IME; never auto-enable.
-3. Desktop: small input UI / send-on-enter; visible “typing to phone” indicator;
-   kill switch on both sides.
-4. Out of scope for v1: Bluetooth HID, mouse/touchpad, gamepad.
+## Chunked file transfer
+
+- `file_offer` / `file_chunk` / `file_done` / `file_abort` (encrypted).
+- Soft cap 100 MiB; legacy single `file_transfer` for small payloads.
+
+## Find phone
+
+- Desktop → phone `find_phone` (default ~30 s).
+- Phone: full-screen overlay + vibration + high-priority notification; dismiss stops.

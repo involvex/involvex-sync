@@ -78,6 +78,8 @@ export default function App() {
   );
   const settingsRef = useRef(settings);
   settingsRef.current = settings;
+  const [keyboardText, setKeyboardText] = useState("");
+  const [phoneImeActive, setPhoneImeActive] = useState(false);
 
   const log = useCallback((line: string) => {
     const stamp = new Date().toLocaleTimeString();
@@ -135,6 +137,10 @@ export default function App() {
         } catch (e) {
           log(`notif failed: ${String(e)}`);
         }
+      },
+      onKeyboardStatus: (active) => {
+        setPhoneImeActive(active);
+        log(active ? "phone IME active" : "phone IME inactive");
       },
       onPairRequest: (request) => {
         setPendingPair(request);
@@ -480,6 +486,97 @@ export default function App() {
             <button type="button" onClick={() => void onSendClipboard()}>
               Send clipboard
             </button>
+            <button
+              type="button"
+              disabled={!peer}
+              onClick={() => {
+                void session
+                  ?.sendFindPhone()
+                  .then(() => log("find phone sent"))
+                  .catch((e) => log(`find phone: ${String(e)}`));
+              }}
+            >
+              Find phone
+            </button>
+          </div>
+        </article>
+
+        <article className="card">
+          <h2>Sync Keyboard</h2>
+          {settings.sendKeysToPhone && phoneImeActive ? (
+            <p className="status-ok">Typing to phone</p>
+          ) : (
+            <p className="muted small">
+              {settings.sendKeysToPhone
+                ? "Waiting for Sync Keyboard on phone…"
+                : "Enable “Send keys to phone” in Settings."}
+            </p>
+          )}
+          <label className="stack">
+            Text
+            <textarea
+              value={keyboardText}
+              onChange={(e) => setKeyboardText(e.target.value)}
+              rows={3}
+              placeholder="Type here, then Send…"
+              disabled={!settings.sendKeysToPhone || !peer}
+              onKeyDown={(e) => {
+                if (e.key !== "Enter" || e.shiftKey) return;
+                e.preventDefault();
+                if (!settings.sendKeysToPhone || !session || !peer) return;
+                const text = keyboardText;
+                if (!text) return;
+                void session
+                  .sendKeyboardText(text)
+                  .then(() => {
+                    setKeyboardText("");
+                    log(`keys → phone (${text.length} chars)`);
+                  })
+                  .catch((err) => log(`keyboard: ${String(err)}`));
+              }}
+            />
+          </label>
+          <div className="row">
+            <button
+              type="button"
+              disabled={!settings.sendKeysToPhone || !peer || !keyboardText}
+              onClick={() => {
+                if (!session || !keyboardText) return;
+                void session
+                  .sendKeyboardText(keyboardText)
+                  .then(() => {
+                    setKeyboardText("");
+                    log("keys → phone");
+                  })
+                  .catch((e) => log(`keyboard: ${String(e)}`));
+              }}
+            >
+              Send
+            </button>
+            <button
+              type="button"
+              disabled={!settings.sendKeysToPhone || !peer}
+              onClick={() => {
+                void session
+                  ?.sendKeyboardKey("backspace")
+                  .then(() => log("backspace → phone"))
+                  .catch((e) => log(`keyboard: ${String(e)}`));
+              }}
+            >
+              Backspace
+            </button>
+            <button
+              type="button"
+              disabled={!settings.sendKeysToPhone || !peer}
+              onClick={() => {
+                void session
+                  ?.sendKeyboardKey("enter")
+                  .then(() => log("enter → phone"))
+                  .catch((e) => log(`keyboard: ${String(e)}`));
+              }}
+            >
+              Enter
+            </button>
           </div>
         </article>
 
@@ -541,9 +638,28 @@ export default function App() {
             />
             Show phone notifications
           </label>
+          <label className="check">
+            <input
+              type="checkbox"
+              checked={settings.sendKeysToPhone}
+              onChange={(e) => {
+                const next = saveSettings({
+                  sendKeysToPhone: e.target.checked,
+                });
+                setSettings(next);
+                log(
+                  next.sendKeysToPhone
+                    ? "send keys to phone on"
+                    : "send keys to phone off",
+                );
+              }}
+            />
+            Send keys to phone
+          </label>
           <p className="muted small">
             Close / minimize hides to the tray. Quit only from the tray menu.
-            Phone must enable Notification access + “Mirror to PC”.
+            Phone must enable Notification access + “Mirror to PC”, and select
+            Sync Keyboard to receive keys.
           </p>
         </article>
 

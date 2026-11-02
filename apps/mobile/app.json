@@ -72,7 +72,8 @@
       "./modules/invx-keepalive/app.plugin.js",
       "./modules/invx-termux/app.plugin.js",
       "./modules/invx-mdns/app.plugin.js",
-      "./modules/invx-notify/app.plugin.js"
+      "./modules/invx-notify/app.plugin.js",
+      "./modules/invx-ime/app.plugin.js"
     ],
     "extra": {
       "relayUrl": "wss://sync.involvex.workers.dev/ws",

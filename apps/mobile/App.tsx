@@ -1,6 +1,6 @@
 import {
   DEFAULT_PORT,
-  MAX_FILE_TRANSFER_BYTES,
+  MAX_CHUNKED_FILE_BYTES,
   buildPairingPayload,
   deviceFingerprint,
   looksLikeUrl,
@@ -15,14 +15,25 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   AppState,
   Linking,
+  Modal,
   Pressable,
   ScrollView,
   StyleSheet,
   Text,
   TextInput,
+  Vibration,
   View,
 } from "react-native";
 import { SafeAreaProvider, SafeAreaView } from "react-native-safe-area-context";
+import {
+  addImeActiveListener,
+  imeCommitText,
+  imeSendKey,
+  isImeActive,
+  isImeReceiveEnabled,
+  openImeSettings,
+  setImeReceiveEnabled,
+} from "./modules/invx-ime/src";
 import { startKeepalive, stopKeepalive } from "./modules/invx-keepalive/src";
 import {
   addMdnsErrorListener,
@@ -33,6 +44,13 @@ import {
   type DiscoveredService,
 } from "./modules/invx-mdns/src";
 import {
+  addNotificationMirrorListener,
+  isNotifyListenerGranted,
+  isNotifyMirrorEnabled,
+  openNotifyListenerSettings,
+  setNotifyMirrorEnabled,
+} from "./modules/invx-notify/src";
+import {
   addShareFilesListener,
   addShareListener,
   clearSharedFiles,
@@ -41,13 +59,6 @@ import {
   getSharedText,
   readSharedFileBase64,
 } from "./modules/invx-share/src";
-import {
-  addNotificationMirrorListener,
-  isNotifyListenerGranted,
-  isNotifyMirrorEnabled,
-  openNotifyListenerSettings,
-  setNotifyMirrorEnabled,
-} from "./modules/invx-notify/src";
 import { startTermuxRunCommand } from "./modules/invx-termux/src";
 import {
   appendClipboardHistory,
@@ -95,7 +106,16 @@ export default function App() {
   const [pairingBusy, setPairingBusy] = useState(false);
   const [mirrorNotifs, setMirrorNotifs] = useState(false);
   const [listenerGranted, setListenerGranted] = useState(false);
+  const [imeReceive, setImeReceive] = useState(false);
+  const [imeActive, setImeActive] = useState(false);
+  const [finding, setFinding] = useState(false);
   const sessionRef = useRef<MobileSession | null>(null);
+  const imeReceiveRef = useRef(false);
+  const imeActiveRef = useRef(false);
+  const findTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  imeReceiveRef.current = imeReceive;
+  imeActiveRef.current = imeActive;
 
   const log = useCallback((line: string) => {
     const stamp = new Date().toLocaleTimeString();
@@ -139,8 +159,42 @@ export default function App() {
       setHistory(await loadClipboardHistory());
       setMirrorNotifs(await isNotifyMirrorEnabled());
       setListenerGranted(await isNotifyListenerGranted());
+      setImeReceive(await isImeReceiveEnabled());
+      setImeActive(await isImeActive());
     })();
   }, []);
+
+  const stopFindPhone = useCallback(() => {
+    if (findTimerRef.current) {
+      clearTimeout(findTimerRef.current);
+      findTimerRef.current = null;
+    }
+    Vibration.cancel();
+    setFinding(false);
+  }, []);
+
+  const startFindPhone = useCallback(
+    (durationMs: number) => {
+      stopFindPhone();
+      setFinding(true);
+      Vibration.vibrate([0, 800, 400, 800], true);
+      void Notifications.scheduleNotificationAsync({
+        content: {
+          title: "Find phone",
+          body: "Your PC is looking for this phone",
+          sound: true,
+          priority: Notifications.AndroidNotificationPriority.MAX,
+        },
+        trigger: null,
+      });
+      findTimerRef.current = setTimeout(() => {
+        stopFindPhone();
+        log("find phone timed out");
+      }, durationMs);
+      log("find phone ringing");
+    },
+    [log, stopFindPhone],
+  );
 
   useEffect(() => {
     const sub = addNotificationMirrorListener((note) => {
@@ -152,6 +206,15 @@ export default function App() {
       } catch (e) {
         log(`notif mirror failed: ${String(e)}`);
       }
+    });
+    return () => sub.remove();
+  }, [log]);
+
+  useEffect(() => {
+    const sub = addImeActiveListener((active) => {
+      setImeActive(active);
+      sessionRef.current?.sendKeyboardStatus(active && imeReceiveRef.current);
+      log(active ? "Sync Keyboard active" : "Sync Keyboard inactive");
     });
     return () => sub.remove();
   }, [log]);
@@ -223,7 +286,26 @@ export default function App() {
         await pushHistory(text, "in");
       },
       onFileTransfer: (file) => {
-        log(`recv file ${file.name} (${file.size} B) — open on desktop`);
+        log(`recv file ${file.name} (${file.size} B)`);
+      },
+      onKeyboardText: async (text) => {
+        if (!imeReceiveRef.current || !imeActiveRef.current) {
+          log("keyboard ignored (IME off or inactive)");
+          return;
+        }
+        const ok = await imeCommitText(text);
+        log(ok ? `typed ${text.length} chars` : "IME commit failed");
+      },
+      onKeyboardKey: async (key) => {
+        if (!imeReceiveRef.current || !imeActiveRef.current) {
+          log("keyboard key ignored");
+          return;
+        }
+        const ok = await imeSendKey(key);
+        log(ok ? `key ${key}` : `key ${key} failed`);
+      },
+      onFindPhone: (durationMs) => {
+        startFindPhone(durationMs);
       },
       onPairAccept: async (accept) => {
         const next: StoredPeer = {
@@ -260,7 +342,14 @@ export default function App() {
     });
     sessionRef.current = s;
     return s;
-  }, [identity, log, openUrlViaNotification, pushHistory, host]);
+  }, [
+    identity,
+    log,
+    openUrlViaNotification,
+    pushHistory,
+    host,
+    startFindPhone,
+  ]);
 
   useEffect(() => {
     if (session && peer) session.setPeer(peer);
@@ -356,7 +445,7 @@ export default function App() {
       try {
         const bytes = await readSharedFileBase64(
           file.uri,
-          MAX_FILE_TRANSFER_BYTES,
+          MAX_CHUNKED_FILE_BYTES,
         );
         s.sendFile(bytes);
         log(`sent file ${bytes.name} (${bytes.size} B)`);
@@ -515,6 +604,17 @@ export default function App() {
     <SafeAreaProvider>
       <SafeAreaView style={styles.root}>
         <StatusBar style="light" />
+        <Modal visible={finding} animationType="fade" transparent={false}>
+          <View style={styles.findRoot}>
+            <Text style={styles.findTitle}>Find phone</Text>
+            <Text style={styles.findBody}>
+              Your PC is looking for this device.
+            </Text>
+            <Pressable style={styles.btn} onPress={stopFindPhone}>
+              <Text style={styles.btnText}>Dismiss</Text>
+            </Pressable>
+          </View>
+        </Modal>
         <ScrollView contentContainerStyle={styles.content}>
           <View style={styles.headerRow}>
             <View style={{ flex: 1 }}>
@@ -609,6 +709,41 @@ export default function App() {
               </Pressable>
             </View>
           ) : null}
+
+          <View style={styles.card}>
+            <Text style={styles.h2}>Sync Keyboard</Text>
+            <Text style={styles.muted}>
+              Receive keystrokes from the PC. Enable involvex Sync Keyboard in
+              Android input settings, then select it when typing.
+            </Text>
+            <Text style={styles.body}>
+              IME: {imeActive ? "active" : "inactive"}
+            </Text>
+            <Pressable
+              style={[styles.btn, imeReceive && styles.chipOn]}
+              onPress={() => {
+                void (async () => {
+                  const next = !imeReceive;
+                  await setImeReceiveEnabled(next);
+                  setImeReceive(next);
+                  sessionRef.current?.sendKeyboardStatus(next && imeActive);
+                  log(next ? "receive keyboard on" : "receive keyboard off");
+                })();
+              }}
+            >
+              <Text style={styles.btnText}>
+                {imeReceive
+                  ? "Receive keyboard: on"
+                  : "Receive keyboard from PC: off"}
+              </Text>
+            </Pressable>
+            <Pressable
+              style={styles.btnGhost}
+              onPress={() => void openImeSettings()}
+            >
+              <Text style={styles.btnText}>Open Android IME settings</Text>
+            </Pressable>
+          </View>
 
           <View style={styles.card}>
             <Text style={styles.h2}>Notification sync</Text>
@@ -884,4 +1019,23 @@ const styles = StyleSheet.create({
   },
   chipOn: { backgroundColor: "#3d7eff" },
   chipText: { color: "white", fontWeight: "600", fontSize: 13 },
+  findRoot: {
+    flex: 1,
+    backgroundColor: "#0b1220",
+    alignItems: "center",
+    justifyContent: "center",
+    padding: 24,
+    gap: 16,
+  },
+  findTitle: {
+    color: "#e8eef8",
+    fontSize: 32,
+    fontWeight: "800",
+  },
+  findBody: {
+    color: "#9db0cc",
+    fontSize: 16,
+    textAlign: "center",
+    marginBottom: 12,
+  },
 });

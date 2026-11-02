@@ -11,11 +11,16 @@ import {
 import { bytesToHex } from "./hex";
 import type {
   DeviceKeys,
+  KeyboardKeyId,
   MessageBody,
   MessagePayload,
   WireFrame,
 } from "./types";
-import { PROTOCOL_VERSION } from "./types";
+import {
+  KEYBOARD_KEY_IDS,
+  MAX_KEYBOARD_TEXT_CHARS,
+  PROTOCOL_VERSION,
+} from "./types";
 import { parseAllowedUrl } from "./url";
 
 export type PeerPublicKeys = {
@@ -205,4 +210,88 @@ export function notificationMirrorBody(
     },
     to,
   );
+}
+
+export function isKeyboardKeyId(key: string): key is KeyboardKeyId {
+  return (KEYBOARD_KEY_IDS as readonly string[]).includes(key);
+}
+
+export function keyboardTextBody(
+  from: string,
+  text: string,
+  to?: string,
+): MessageBody | null {
+  const trimmed = text.slice(0, MAX_KEYBOARD_TEXT_CHARS);
+  if (!trimmed) return null;
+  return createMessageBody(from, { type: "keyboard_text", text: trimmed }, to);
+}
+
+export function keyboardKeyBody(
+  from: string,
+  key: KeyboardKeyId,
+  to?: string,
+): MessageBody | null {
+  if (!isKeyboardKeyId(key)) return null;
+  return createMessageBody(from, { type: "keyboard_key", key }, to);
+}
+
+export function keyboardStatusBody(
+  from: string,
+  active: boolean,
+  to?: string,
+): MessageBody {
+  return createMessageBody(from, { type: "keyboard_status", active }, to);
+}
+
+export function findPhoneBody(
+  from: string,
+  durationMs = 30_000,
+  to?: string,
+): MessageBody {
+  return createMessageBody(
+    from,
+    {
+      type: "find_phone",
+      durationMs: Math.min(Math.max(durationMs, 5_000), 60_000),
+    },
+    to,
+  );
+}
+
+export function fileOfferBody(
+  from: string,
+  offer: {
+    transferId: string;
+    name: string;
+    mimeType: string;
+    size: number;
+    totalChunks: number;
+  },
+  to?: string,
+): MessageBody {
+  return createMessageBody(from, { type: "file_offer", ...offer }, to);
+}
+
+export function fileChunkBody(
+  from: string,
+  chunk: { transferId: string; index: number; dataBase64: string },
+  to?: string,
+): MessageBody {
+  return createMessageBody(from, { type: "file_chunk", ...chunk }, to);
+}
+
+export function fileDoneBody(
+  from: string,
+  done: { transferId: string; sha256: string },
+  to?: string,
+): MessageBody {
+  return createMessageBody(from, { type: "file_done", ...done }, to);
+}
+
+export function fileAbortBody(
+  from: string,
+  abort: { transferId: string; reason?: string },
+  to?: string,
+): MessageBody {
+  return createMessageBody(from, { type: "file_abort", ...abort }, to);
 }

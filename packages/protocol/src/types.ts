@@ -25,10 +25,50 @@ export type MessageType =
   | "termux_open_url"
   | "termux_clipboard_set"
   | "file_transfer"
-  | "notification_mirror";
+  | "file_offer"
+  | "file_chunk"
+  | "file_done"
+  | "file_abort"
+  | "notification_mirror"
+  | "keyboard_text"
+  | "keyboard_key"
+  | "keyboard_status"
+  | "find_phone";
 
-/** Max decoded file size for first-cut base64 transfer (2 MiB). */
+/** Max decoded file size for legacy single-shot base64 transfer (2 MiB). */
 export const MAX_FILE_TRANSFER_BYTES = 2 * 1024 * 1024;
+
+/** Soft cap for chunked transfers (100 MiB). */
+export const MAX_CHUNKED_FILE_BYTES = 100 * 1024 * 1024;
+
+/** Decoded chunk size for file_chunk payloads (~64 KiB). */
+export const FILE_CHUNK_BYTES = 64 * 1024;
+
+/** Max characters per keyboard_text frame. */
+export const MAX_KEYBOARD_TEXT_CHARS = 2000;
+
+export type KeyboardKeyId =
+  | "enter"
+  | "backspace"
+  | "tab"
+  | "escape"
+  | "arrow_left"
+  | "arrow_right"
+  | "arrow_up"
+  | "arrow_down"
+  | "delete";
+
+export const KEYBOARD_KEY_IDS: readonly KeyboardKeyId[] = [
+  "enter",
+  "backspace",
+  "tab",
+  "escape",
+  "arrow_left",
+  "arrow_right",
+  "arrow_up",
+  "arrow_down",
+  "delete",
+] as const;
 
 export type ShareUrlPayload = {
   type: "share_url";
@@ -76,6 +116,36 @@ export type FileTransferPayload = {
   size: number;
 };
 
+export type FileOfferPayload = {
+  type: "file_offer";
+  transferId: string;
+  name: string;
+  mimeType: string;
+  size: number;
+  totalChunks: number;
+};
+
+export type FileChunkPayload = {
+  type: "file_chunk";
+  transferId: string;
+  index: number;
+  /** Base64 of this chunk only. */
+  dataBase64: string;
+};
+
+export type FileDonePayload = {
+  type: "file_done";
+  transferId: string;
+  /** sha256 hex of full decoded file. */
+  sha256: string;
+};
+
+export type FileAbortPayload = {
+  type: "file_abort";
+  transferId: string;
+  reason?: string;
+};
+
 /** Mirrored Android notification (title/body only). */
 export type NotificationMirrorPayload = {
   type: "notification_mirror";
@@ -83,6 +153,27 @@ export type NotificationMirrorPayload = {
   body: string;
   packageName?: string;
   when: number;
+};
+
+export type KeyboardTextPayload = {
+  type: "keyboard_text";
+  text: string;
+};
+
+export type KeyboardKeyPayload = {
+  type: "keyboard_key";
+  key: KeyboardKeyId;
+};
+
+export type KeyboardStatusPayload = {
+  type: "keyboard_status";
+  active: boolean;
+};
+
+export type FindPhonePayload = {
+  type: "find_phone";
+  /** How long the phone should ring, ms. */
+  durationMs: number;
 };
 
 export type MessagePayload =
@@ -94,7 +185,15 @@ export type MessagePayload =
   | TermuxOpenUrlPayload
   | TermuxClipboardSetPayload
   | FileTransferPayload
-  | NotificationMirrorPayload;
+  | FileOfferPayload
+  | FileChunkPayload
+  | FileDonePayload
+  | FileAbortPayload
+  | NotificationMirrorPayload
+  | KeyboardTextPayload
+  | KeyboardKeyPayload
+  | KeyboardStatusPayload
+  | FindPhonePayload;
 
 /** Cleartext body sealed inside the encrypted frame. */
 export type MessageBody = {
