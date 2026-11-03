@@ -19,7 +19,8 @@
     "android": "bun run --filter @involvex/mobile android",
     "isync": "bun run apps/cli/src/isync.ts",
     "relay:dev": "bun run --filter @involvex/relay dev",
-    "relay:deploy": "bun run --filter @involvex/relay deploy"
+    "relay:deploy": "bun run --filter @involvex/relay deploy",
+    "prebuild": "bun fmt && bun run check && bun run lint"
   },
   "devDependencies": {
     "typescript": "^5.7.3"

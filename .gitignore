@@ -19,3 +19,4 @@ workers/relay/.wrangler/
 *.local
 .cursor/
 .claude/
+.cline/
