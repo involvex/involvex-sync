@@ -7,8 +7,12 @@ import {
   type PairAcceptPayload,
   type PeerPublicKeys,
   type RemoteShell,
+  FILE_CHUNK_BYTES,
   ChunkAssembler,
+  assertSendableSize,
   buildPairRequest,
+  bytesToHex,
+  chunkCountForSize,
   clipboardUpdateBody,
   decryptFrame,
   encryptFrame,
@@ -17,18 +21,19 @@ import {
   fileDoneBody,
   fileOfferBody,
   fileTransferBody,
+  fromBase64,
+  iterateFileChunks,
   keyboardStatusBody,
   notificationMirrorBody,
   parseAllowedUrl,
   parseFrame,
   parsePairHandshake,
-  planChunkedTransferFromBase64,
   randomBytes,
   remoteCommandBody,
   remoteCommandResultBody,
   serializeFrame,
   shareUrlBody,
-  bytesToHex,
+  toBase64,
 } from "@involvex/protocol";
 import type { StoredDeviceKeys, StoredPeer } from "./identity";
 import { toDeviceKeys } from "./identity";
@@ -296,12 +301,12 @@ export class MobileSession {
         this.assemblers.delete(payload.transferId);
         if (!asm) break;
         try {
-          const dataBase64 = asm.finishBase64(payload.sha256);
+          const data = asm.finish(payload.sha256);
           await this.handlers.onFileTransfer?.(
             {
               name: asm.name,
               mimeType: asm.mimeType,
-              dataBase64,
+              dataBase64: toBase64(data),
               size: asm.size,
             },
             body.from,
@@ -393,55 +398,71 @@ export class MobileSession {
   sendFile(file: {
     name: string;
     mimeType: string;
-    dataBase64: string;
-    size: number;
+    data?: Uint8Array;
+    dataBase64?: string;
+    size?: number;
   }): void {
     if (!this.peer) throw new Error("not connected");
-    // Prefer chunked for anything non-trivial; keep legacy for tiny files.
-    if (file.size <= 64 * 1024) {
+    const data =
+      file.data ?? (file.dataBase64 ? fromBase64(file.dataBase64) : null);
+    if (!data) throw new Error("missing file bytes");
+    assertSendableSize(data.byteLength);
+    if (data.byteLength <= FILE_CHUNK_BYTES) {
       this.sendFrame(
-        fileTransferBody(this.local.deviceId, file, this.peer.deviceId),
+        fileTransferBody(
+          this.local.deviceId,
+          {
+            name: file.name,
+            mimeType: file.mimeType,
+            dataBase64: toBase64(data),
+            size: data.byteLength,
+          },
+          this.peer.deviceId,
+        ),
       );
+      this.handlers.onLog(`sent file ${file.name} (${data.byteLength} B)`);
       return;
     }
     const transferId = bytesToHex(randomBytes(8));
-    const plan = planChunkedTransferFromBase64(
-      transferId,
-      file.name,
-      file.mimeType,
-      file.dataBase64,
-    );
+    const totalChunks = chunkCountForSize(data.byteLength);
     this.sendFrame(
       fileOfferBody(
         this.local.deviceId,
         {
-          transferId: plan.transferId,
-          name: plan.name,
-          mimeType: plan.mimeType,
-          size: plan.size,
-          totalChunks: plan.totalChunks,
+          transferId,
+          name: file.name,
+          mimeType: file.mimeType,
+          size: data.byteLength,
+          totalChunks,
         },
         this.peer.deviceId,
       ),
     );
-    plan.chunks.forEach((dataBase64, index) => {
+    const iter = iterateFileChunks(data);
+    let step = iter.next();
+    while (!step.done) {
       this.sendFrame(
         fileChunkBody(
           this.local.deviceId,
-          { transferId, index, dataBase64 },
-          this.peer!.deviceId,
+          {
+            transferId,
+            index: step.value.index,
+            dataBase64: step.value.dataBase64,
+          },
+          this.peer.deviceId,
         ),
       );
-    });
+      step = iter.next();
+    }
     this.sendFrame(
       fileDoneBody(
         this.local.deviceId,
-        { transferId, sha256: plan.sha256 },
+        { transferId, sha256: step.value },
         this.peer.deviceId,
       ),
     );
     this.handlers.onLog(
-      `sent file ${plan.name} (${plan.size} B, ${plan.totalChunks} chunks)`,
+      `sent file ${file.name} (${data.byteLength} B, ${totalChunks} chunks)`,
     );
   }
 

@@ -3,6 +3,7 @@ import {
   MAX_CHUNKED_FILE_BYTES,
   buildPairingPayload,
   deviceFingerprint,
+  fromBase64,
   looksLikeUrl,
   pairingQrText,
   parseAllowedUrl,
@@ -99,6 +100,30 @@ Notifications.setNotificationHandler({
 
 type PendingFile = { uri: string; name: string; mimeType: string };
 
+function guessMime(name: string): string {
+  const lower = name.toLowerCase();
+  if (lower.endsWith(".png")) return "image/png";
+  if (lower.endsWith(".jpg") || lower.endsWith(".jpeg")) return "image/jpeg";
+  if (lower.endsWith(".webp")) return "image/webp";
+  if (lower.endsWith(".gif")) return "image/gif";
+  if (lower.endsWith(".pdf")) return "application/pdf";
+  if (lower.endsWith(".json")) return "application/json";
+  if (lower.endsWith(".txt") || lower.endsWith(".md")) return "text/plain";
+  if (lower.endsWith(".zip")) return "application/zip";
+  return "application/octet-stream";
+}
+
+function labelFromSafUri(uri: string): string {
+  try {
+    const decoded = decodeURIComponent(uri);
+    const tree = decoded.split("tree/")[1] ?? decoded;
+    const last = tree.split("/").pop() ?? tree;
+    return last.replace(/^primary:/, "").replace(/:/g, "/") || "picked folder";
+  } catch {
+    return "picked folder";
+  }
+}
+
 export default function App() {
   const [identity, setIdentity] = useState<StoredDeviceKeys | null>(null);
   const [peer, setPeer] = useState<StoredPeer | null>(null);
@@ -127,7 +152,8 @@ export default function App() {
   const [imeActive, setImeActive] = useState(false);
   const [finding, setFinding] = useState(false);
   const [appSettings, setAppSettings] = useState<MobileAppSettings>({
-    incomingFilesDir: "involvex-Sync",
+    incomingFilesUri: "",
+    incomingFilesLabel: "",
     allowRemoteTermux: false,
   });
   const [pwshCmd, setPwshCmd] = useState("");
@@ -337,21 +363,39 @@ export default function App() {
       },
       onFileTransfer: async (file) => {
         try {
-          const root = FileSystem.documentDirectory;
-          if (!root) {
-            log(`recv file ${file.name} (no document dir)`);
+          const safe = file.name.replace(/[^\w.-]+/g, "_") || "file.bin";
+          const mime = file.mimeType || guessMime(safe);
+          const safUri = appSettingsRef.current.incomingFilesUri.trim();
+          if (safUri) {
+            const created =
+              await FileSystem.StorageAccessFramework.createFileAsync(
+                safUri,
+                safe,
+                mime,
+              );
+            await FileSystem.StorageAccessFramework.writeAsStringAsync(
+              created,
+              file.dataBase64,
+              { encoding: FileSystem.EncodingType.Base64 },
+            );
+            log(`saved file → ${created} (${file.size} B)`);
             return;
           }
-          const folder =
-            appSettingsRef.current.incomingFilesDir || "involvex-Sync";
-          const dir = `${root}${folder.replace(/^\/+|\/+$/g, "")}/`;
+          // Fallback: app-private Documents (not visible in Files without debug).
+          const root = FileSystem.documentDirectory;
+          if (!root) {
+            log(`recv file ${file.name} (pick a save folder in Features)`);
+            return;
+          }
+          const dir = `${root}involvex-Sync/`;
           await FileSystem.makeDirectoryAsync(dir, { intermediates: true });
-          const safe = file.name.replace(/[^\w.-]+/g, "_") || "file.bin";
           const path = `${dir}${safe}`;
           await FileSystem.writeAsStringAsync(path, file.dataBase64, {
             encoding: FileSystem.EncodingType.Base64,
           });
-          log(`saved file → ${path} (${file.size} B)`);
+          log(
+            `saved to app storage → ${path} (${file.size} B) — pick an SD/folder in Features for Files access`,
+          );
         } catch (e) {
           log(`file save failed: ${String(e)}`);
         }
@@ -602,12 +646,16 @@ export default function App() {
     }
     for (const file of pendingFiles) {
       try {
-        const bytes = await readSharedFileBase64(
+        const shared = await readSharedFileBase64(
           file.uri,
           MAX_CHUNKED_FILE_BYTES,
         );
-        s.sendFile(bytes);
-        log(`sent file ${bytes.name} (${bytes.size} B)`);
+        s.sendFile({
+          name: shared.name,
+          mimeType: shared.mimeType,
+          data: fromBase64(shared.dataBase64),
+        });
+        log(`sent file ${shared.name} (${shared.size} B)`);
       } catch (e) {
         log(`file ${file.name}: ${String(e)}`);
       }
@@ -718,6 +766,36 @@ export default function App() {
     startPairTimeout();
   }
 
+  async function pickIncomingFolder(): Promise<void> {
+    try {
+      const permissions =
+        await FileSystem.StorageAccessFramework.requestDirectoryPermissionsAsync();
+      if (!permissions.granted || !permissions.directoryUri) {
+        log("folder pick cancelled");
+        return;
+      }
+      const next = await saveAppSettings({
+        incomingFilesUri: permissions.directoryUri,
+        incomingFilesLabel: labelFromSafUri(permissions.directoryUri),
+      });
+      setAppSettings(next);
+      log(
+        `incoming folder → ${next.incomingFilesLabel || next.incomingFilesUri}`,
+      );
+    } catch (e) {
+      log(`folder pick failed: ${String(e)}`);
+    }
+  }
+
+  async function clearIncomingFolder(): Promise<void> {
+    const next = await saveAppSettings({
+      incomingFilesUri: "",
+      incomingFilesLabel: "",
+    });
+    setAppSettings(next);
+    log("incoming folder cleared (app Documents fallback)");
+  }
+
   async function pickAndSendFile(): Promise<void> {
     const s = sessionRef.current;
     if (!s?.isOpen) {
@@ -731,17 +809,24 @@ export default function App() {
       });
       if (picked.canceled || !picked.assets?.[0]) return;
       const asset = picked.assets[0];
+      const size = asset.size ?? 0;
+      if (size > MAX_CHUNKED_FILE_BYTES) {
+        log(
+          `file too large (max ${Math.floor(MAX_CHUNKED_FILE_BYTES / (1024 * 1024))} MiB)`,
+        );
+        return;
+      }
       const dataBase64 = await FileSystem.readAsStringAsync(asset.uri, {
         encoding: FileSystem.EncodingType.Base64,
       });
-      const size = asset.size ?? Math.floor((dataBase64.length * 3) / 4);
+      // Decode once, then stream chunks (avoid keeping full-file base64 + chunks[]).
+      const data = fromBase64(dataBase64);
       s.sendFile({
         name: asset.name,
         mimeType: asset.mimeType || "application/octet-stream",
-        dataBase64,
-        size,
+        data,
       });
-      log(`sent file ${asset.name} (${size} B)`);
+      log(`sent file ${asset.name} (${data.byteLength} B)`);
     } catch (e) {
       log(`send file: ${String(e)}`);
     }
@@ -1165,10 +1250,30 @@ export default function App() {
           <View style={styles.card}>
             <Text style={styles.h2}>Files</Text>
             <Text style={styles.muted}>
-              Saves to Documents/{appSettings.incomingFilesDir}/
+              {appSettings.incomingFilesUri
+                ? `Saves to ${appSettings.incomingFilesLabel || "picked folder"}`
+                : "No folder picked — files land in private app storage."}
             </Text>
             <Pressable
               style={styles.btn}
+              onPress={() => void pickIncomingFolder()}
+            >
+              <Text style={styles.btnText}>
+                {appSettings.incomingFilesUri
+                  ? "Change save folder"
+                  : "Pick save folder (SD / Files)"}
+              </Text>
+            </Pressable>
+            {appSettings.incomingFilesUri ? (
+              <Pressable
+                style={styles.linkBtn}
+                onPress={() => void clearIncomingFolder()}
+              >
+                <Text style={styles.linkText}>Clear save folder</Text>
+              </Pressable>
+            ) : null}
+            <Pressable
+              style={styles.btnGhost}
               onPress={() => void pickAndSendFile()}
             >
               <Text style={styles.btnText}>Send file to PC</Text>
@@ -1217,26 +1322,6 @@ export default function App() {
 
           <View style={styles.card}>
             <Text style={styles.h2}>Features</Text>
-            <Text style={styles.label}>Incoming files folder</Text>
-            <TextInput
-              style={styles.input}
-              autoCapitalize="none"
-              autoCorrect={false}
-              value={appSettings.incomingFilesDir}
-              onChangeText={(value) =>
-                setAppSettings((prev) => ({
-                  ...prev,
-                  incomingFilesDir: value,
-                }))
-              }
-              onEndEditing={() => {
-                void saveAppSettings({
-                  incomingFilesDir: appSettings.incomingFilesDir,
-                }).then(setAppSettings);
-              }}
-              placeholder="involvex-Sync"
-              placeholderTextColor="#6b7c99"
-            />
             <View style={styles.settingRow}>
               <View style={styles.settingCopy}>
                 <Text style={styles.body}>Allow remote Termux</Text>

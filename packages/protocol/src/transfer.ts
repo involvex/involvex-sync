@@ -12,14 +12,67 @@ export type ChunkPlan = {
   sha256: string;
 };
 
+export type ChunkedSendMeta = {
+  transferId: string;
+  name: string;
+  mimeType: string;
+  size: number;
+  totalChunks: number;
+};
+
+/**
+ * Encode bytes to base64 without building one giant intermediate string
+ * character-by-character (that OOMs Chromium/WebView on multi‑MB files).
+ */
 function toBase64(bytes: Uint8Array): string {
-  let binary = "";
   const step = 0x8000;
+  if (bytes.length <= step) {
+    return btoa(String.fromCharCode(...bytes));
+  }
+  let binary = "";
   for (let i = 0; i < bytes.length; i += step) {
     const slice = bytes.subarray(i, Math.min(i + step, bytes.length));
     binary += String.fromCharCode(...slice);
   }
   return btoa(binary);
+}
+
+/** How many FILE_CHUNK_BYTES slices a payload needs (at least 1). */
+export function chunkCountForSize(size: number): number {
+  if (size <= 0) return 1;
+  return Math.ceil(size / FILE_CHUNK_BYTES);
+}
+
+export function assertSendableSize(size: number): void {
+  if (size > MAX_CHUNKED_FILE_BYTES) {
+    throw new Error(`file too large (${size} > ${MAX_CHUNKED_FILE_BYTES})`);
+  }
+}
+
+/**
+ * Stream chunk base64 payloads one slice at a time (no full-file base64,
+ * no chunks[] array). Caller sends offer → each chunk → done with digest.
+ */
+export function* iterateFileChunks(
+  bytes: Uint8Array,
+): Generator<{ index: number; dataBase64: string }, string, void> {
+  assertSendableSize(bytes.byteLength);
+  const hasher = sha256.create();
+  const total = chunkCountForSize(bytes.byteLength);
+  if (bytes.byteLength === 0) {
+    yield { index: 0, dataBase64: "" };
+    return bytesToHex(hasher.digest());
+  }
+  for (let index = 0; index < total; index++) {
+    const offset = index * FILE_CHUNK_BYTES;
+    const slice = bytes.subarray(
+      offset,
+      Math.min(offset + FILE_CHUNK_BYTES, bytes.byteLength),
+    );
+    hasher.update(slice);
+    yield { index, dataBase64: toBase64(slice) };
+  }
+  return bytesToHex(hasher.digest());
 }
 
 function fromBase64(b64: string): Uint8Array {

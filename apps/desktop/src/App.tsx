@@ -1,5 +1,6 @@
 import {
   DEFAULT_PORT,
+  MAX_CHUNKED_FILE_BYTES,
   buildPairingPayload,
   deviceFingerprint,
   encryptFrame,
@@ -13,7 +14,11 @@ import {
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { enable as enableAutostart } from "@tauri-apps/plugin-autostart";
-import { readText, writeText } from "@tauri-apps/plugin-clipboard-manager";
+import {
+  readText,
+  writeImage,
+  writeText,
+} from "@tauri-apps/plugin-clipboard-manager";
 import {
   isPermissionGranted,
   requestPermission,
@@ -127,6 +132,7 @@ export default function App() {
   const [termuxCmd, setTermuxCmd] = useState("");
   const [adbCmd, setAdbCmd] = useState("");
   const [cmdOutput, setCmdOutput] = useState("");
+  const [screenshotBusy, setScreenshotBusy] = useState(false);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   const sessionRef = useRef<SyncSession | null>(null);
@@ -700,19 +706,23 @@ export default function App() {
       if (!live) toast("Phone not connected", "err");
       return;
     }
+    if (file.size > MAX_CHUNKED_FILE_BYTES) {
+      toast(
+        `File too large (max ${Math.floor(MAX_CHUNKED_FILE_BYTES / (1024 * 1024))} MiB)`,
+        "err",
+      );
+      return;
+    }
+    if (file.size > 20 * 1024 * 1024) {
+      toast("Large file — sending in chunks…", "info");
+    }
     try {
-      const buffer = await file.arrayBuffer();
-      const bytes = new Uint8Array(buffer);
-      let binary = "";
-      for (let i = 0; i < bytes.length; i++) {
-        binary += String.fromCharCode(bytes[i]);
-      }
-      const dataBase64 = btoa(binary);
+      // Keep raw bytes only; session streams base64 per chunk (no giant string).
+      const data = new Uint8Array(await file.arrayBuffer());
       await session.sendFile({
         name: file.name,
         mimeType: file.type || "application/octet-stream",
-        dataBase64,
-        size: file.size,
+        data,
       });
       log(`sent file ${file.name} (${file.size} B)`);
       toast(`Sent ${file.name}`, "ok");
@@ -764,6 +774,24 @@ export default function App() {
       setCmdOutput(msg);
       log(`adb: ${msg}`);
       toast("ADB failed (is adb on PATH?)", "err");
+    }
+  }
+
+  async function onScreenshot(): Promise<void> {
+    if (screenshotBusy) return;
+    setScreenshotBusy(true);
+    try {
+      const path = await invoke<string>("adb_screencap", { timeoutMs: 20_000 });
+      await writeImage(path);
+      log(`screenshot → clipboard (${path})`);
+      toast("Screenshot copied to clipboard", "ok");
+    } catch (e) {
+      const msg = String(e);
+      log(`screenshot: ${msg}`);
+      toast("Screenshot failed (USB debugging / adb?)", "err");
+      setCmdOutput(msg);
+    } finally {
+      setScreenshotBusy(false);
     }
   }
 
@@ -960,7 +988,20 @@ export default function App() {
               >
                 Find phone
               </button>
+              <button
+                type="button"
+                className="ghost"
+                disabled={screenshotBusy}
+                onClick={() => void onScreenshot()}
+                title="adb screencap → PC clipboard (USB debugging)"
+              >
+                {screenshotBusy ? "Capturing…" : "Screenshot"}
+              </button>
             </div>
+            <p className="muted small">
+              Screenshot uses ADB (like scrcpy) — phone needs USB/Wi‑Fi
+              debugging; image goes to the PC clipboard.
+            </p>
           </article>
         ) : null}
 
@@ -1024,6 +1065,15 @@ export default function App() {
               <p className="muted small">
                 Runs <code>adb shell …</code> on this PC (USB/Wi‑Fi debugging).
               </p>
+              <div className="row">
+                <button
+                  type="button"
+                  disabled={screenshotBusy}
+                  onClick={() => void onScreenshot()}
+                >
+                  {screenshotBusy ? "Capturing…" : "Screenshot → clipboard"}
+                </button>
+              </div>
               <label className="stack">
                 Shell command
                 <textarea

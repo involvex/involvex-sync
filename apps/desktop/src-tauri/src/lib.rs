@@ -171,6 +171,11 @@ fn run_adb_shell(
     shell::run_adb_shell(&command, timeout_ms.unwrap_or(30_000))
 }
 
+#[tauri::command]
+fn adb_screencap(timeout_ms: Option<u64>) -> Result<String, String> {
+    shell::adb_screencap_png(timeout_ms.unwrap_or(20_000))
+}
+
 fn show_main_window(app: &AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.unminimize();
@@ -293,6 +298,7 @@ pub fn run() {
             default_incoming_dir,
             run_pwsh,
             run_adb_shell,
+            adb_screencap,
             show_main_window_cmd,
         ])
         .build(tauri::generate_context!())

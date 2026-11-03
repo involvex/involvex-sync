@@ -7,10 +7,13 @@ import {
   type PairRequestPayload,
   type PeerPublicKeys,
   type RemoteShell,
+  FILE_CHUNK_BYTES,
   ChunkAssembler,
+  assertSendableSize,
   buildPairAccept,
   buildPairReject,
   bytesToHex,
+  chunkCountForSize,
   clipboardUpdateBody,
   decryptFrame,
   encryptFrame,
@@ -20,17 +23,18 @@ import {
   fileOfferBody,
   fileTransferBody,
   findPhoneBody,
+  iterateFileChunks,
   keyboardKeyBody,
   keyboardTextBody,
   parseAllowedUrl,
   parseFrame,
   parsePairHandshake,
-  planChunkedTransferFromBase64,
   randomBytes,
   remoteCommandBody,
   remoteCommandResultBody,
   serializeFrame,
   shareUrlBody,
+  toBase64,
 } from "@involvex/protocol";
 import { invoke } from "@tauri-apps/api/core";
 import type { StoredPeer } from "./identity";
@@ -232,12 +236,12 @@ export class SyncSession {
         this.assemblers.delete(payload.transferId);
         if (!asm) break;
         try {
-          const dataBase64 = asm.finishBase64(payload.sha256);
+          const data = asm.finish(payload.sha256);
           await this.handlers.onFileTransfer?.(
             {
               name: asm.name,
               mimeType: asm.mimeType,
-              dataBase64,
+              dataBase64: toBase64(data),
               size: asm.size,
             },
             body.from,
@@ -334,54 +338,72 @@ export class SyncSession {
   async sendFile(file: {
     name: string;
     mimeType: string;
-    dataBase64: string;
-    size: number;
+    data: Uint8Array;
   }): Promise<void> {
     if (!this.peer) throw new Error("no peer paired");
-    if (file.size <= 64 * 1024) {
+    assertSendableSize(file.data.byteLength);
+    if (file.data.byteLength <= FILE_CHUNK_BYTES) {
       await this.sendBody(
-        fileTransferBody(this.local.deviceId, file, this.peer.deviceId),
+        fileTransferBody(
+          this.local.deviceId,
+          {
+            name: file.name,
+            mimeType: file.mimeType,
+            dataBase64: toBase64(file.data),
+            size: file.data.byteLength,
+          },
+          this.peer.deviceId,
+        ),
       );
+      this.handlers.onLog(`sent file ${file.name} (${file.data.byteLength} B)`);
       return;
     }
     const transferId = bytesToHex(randomBytes(8));
-    const plan = planChunkedTransferFromBase64(
-      transferId,
-      file.name,
-      file.mimeType,
-      file.dataBase64,
-    );
+    const totalChunks = chunkCountForSize(file.data.byteLength);
     await this.sendBody(
       fileOfferBody(
         this.local.deviceId,
         {
-          transferId: plan.transferId,
-          name: plan.name,
-          mimeType: plan.mimeType,
-          size: plan.size,
-          totalChunks: plan.totalChunks,
+          transferId,
+          name: file.name,
+          mimeType: file.mimeType,
+          size: file.data.byteLength,
+          totalChunks,
         },
         this.peer.deviceId,
       ),
     );
-    for (const [index, dataBase64] of plan.chunks.entries()) {
+    const iter = iterateFileChunks(file.data);
+    let step = iter.next();
+    let sent = 0;
+    while (!step.done) {
       await this.sendBody(
         fileChunkBody(
           this.local.deviceId,
-          { transferId, index, dataBase64 },
+          {
+            transferId,
+            index: step.value.index,
+            dataBase64: step.value.dataBase64,
+          },
           this.peer.deviceId,
         ),
       );
+      sent += 1;
+      // Let the WebView GC between bursts so multi‑MB sends don't OOM.
+      if (sent % 4 === 0) {
+        await new Promise<void>((resolve) => setTimeout(resolve, 0));
+      }
+      step = iter.next();
     }
     await this.sendBody(
       fileDoneBody(
         this.local.deviceId,
-        { transferId, sha256: plan.sha256 },
+        { transferId, sha256: step.value },
         this.peer.deviceId,
       ),
     );
     this.handlers.onLog(
-      `sent file ${plan.name} (${plan.size} B, ${plan.totalChunks} chunks)`,
+      `sent file ${file.name} (${file.data.byteLength} B, ${totalChunks} chunks)`,
     );
   }
 

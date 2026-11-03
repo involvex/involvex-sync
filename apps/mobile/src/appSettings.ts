@@ -3,14 +3,20 @@ import * as SecureStore from "expo-secure-store";
 const KEY = "invx.mobile.appSettings";
 
 export type MobileAppSettings = {
-  /** Relative folder under documentDirectory for incoming files. */
-  incomingFilesDir: string;
+  /**
+   * SAF directory URI from the system folder picker (content://…).
+   * Empty = fall back to app Documents (not user-visible).
+   */
+  incomingFilesUri: string;
+  /** Friendly label for the picked folder (optional). */
+  incomingFilesLabel: string;
   /** Allow PC to run Termux commands on this phone. Default false. */
   allowRemoteTermux: boolean;
 };
 
 const defaults: MobileAppSettings = {
-  incomingFilesDir: "involvex-Sync",
+  incomingFilesUri: "",
+  incomingFilesLabel: "",
   allowRemoteTermux: false,
 };
 
@@ -18,7 +24,24 @@ export async function loadAppSettings(): Promise<MobileAppSettings> {
   try {
     const raw = await SecureStore.getItemAsync(KEY);
     if (!raw) return { ...defaults };
-    return { ...defaults, ...(JSON.parse(raw) as MobileAppSettings) };
+    const parsed = JSON.parse(raw) as Partial<MobileAppSettings> & {
+      /** @deprecated relative Documents path from earlier builds */
+      incomingFilesDir?: string;
+    };
+    return {
+      incomingFilesUri:
+        typeof parsed.incomingFilesUri === "string"
+          ? parsed.incomingFilesUri
+          : defaults.incomingFilesUri,
+      incomingFilesLabel:
+        typeof parsed.incomingFilesLabel === "string"
+          ? parsed.incomingFilesLabel
+          : defaults.incomingFilesLabel,
+      allowRemoteTermux:
+        typeof parsed.allowRemoteTermux === "boolean"
+          ? parsed.allowRemoteTermux
+          : defaults.allowRemoteTermux,
+    };
   } catch {
     return { ...defaults };
   }
@@ -29,11 +52,14 @@ export async function saveAppSettings(
 ): Promise<MobileAppSettings> {
   const current = await loadAppSettings();
   const next: MobileAppSettings = {
-    incomingFilesDir:
-      typeof patch.incomingFilesDir === "string" &&
-      patch.incomingFilesDir.trim()
-        ? patch.incomingFilesDir.trim().replace(/[\\/]+/g, "/")
-        : current.incomingFilesDir,
+    incomingFilesUri:
+      typeof patch.incomingFilesUri === "string"
+        ? patch.incomingFilesUri.trim()
+        : current.incomingFilesUri,
+    incomingFilesLabel:
+      typeof patch.incomingFilesLabel === "string"
+        ? patch.incomingFilesLabel.trim()
+        : current.incomingFilesLabel,
     allowRemoteTermux:
       typeof patch.allowRemoteTermux === "boolean"
         ? patch.allowRemoteTermux

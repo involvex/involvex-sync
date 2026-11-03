@@ -101,3 +101,69 @@ pub fn run_adb_shell(command: &str, timeout_ms: u64) -> Result<CommandResult, St
     cmd.args(["shell", trimmed]);
     run_with_timeout(cmd, timeout)
 }
+
+/// Capture the phone screen via `adb exec-out screencap -p` (binary PNG).
+/// Writes to a temp file and returns its path for clipboard / preview use.
+pub fn adb_screencap_png(timeout_ms: u64) -> Result<String, String> {
+    use std::fs;
+    use std::io::Write;
+
+    let timeout = Duration::from_millis(timeout_ms.clamp(3_000, 60_000));
+    let mut cmd = Command::new("adb");
+    // exec-out keeps PNG binary intact on Windows (shell would expand CRLF).
+    cmd.args(["exec-out", "screencap", "-p"]);
+    cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+    let mut child = cmd.spawn().map_err(|e| format!("adb spawn: {e}"))?;
+    let started = Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                let mut stdout = Vec::new();
+                let mut stderr = String::new();
+                if let Some(mut out) = child.stdout.take() {
+                    let _ = out.read_to_end(&mut stdout);
+                }
+                if let Some(mut err) = child.stderr.take() {
+                    let _ = err.read_to_string(&mut stderr);
+                }
+                if !status.success() {
+                    return Err(format!(
+                        "adb screencap failed (exit {:?}): {}",
+                        status.code(),
+                        stderr.trim()
+                    ));
+                }
+                if stdout.len() < 8
+                    || stdout[0] != 0x89
+                    || stdout[1] != b'P'
+                    || stdout[2] != b'N'
+                    || stdout[3] != b'G'
+                {
+                    return Err(format!(
+                        "adb screencap: not a PNG ({} bytes) {}",
+                        stdout.len(),
+                        stderr.trim()
+                    ));
+                }
+                let path = std::env::temp_dir().join(format!(
+                    "invx-screencap-{}.png",
+                    uuid::Uuid::new_v4()
+                ));
+                let mut file =
+                    fs::File::create(&path).map_err(|e| format!("temp png: {e}"))?;
+                file.write_all(&stdout)
+                    .map_err(|e| format!("temp png write: {e}"))?;
+                return Ok(path.to_string_lossy().to_string());
+            }
+            Ok(None) => {
+                if started.elapsed() > timeout {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err("adb screencap timeout".into());
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            Err(e) => return Err(format!("adb wait: {e}")),
+        }
+    }
+}

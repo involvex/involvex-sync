@@ -96,10 +96,14 @@ export {
 } from "./types";
 export {
   ChunkAssembler,
+  assertSendableSize,
+  chunkCountForSize,
   fromBase64,
+  iterateFileChunks,
   planChunkedTransfer,
   planChunkedTransferFromBase64,
   toBase64,
   type ChunkPlan,
+  type ChunkedSendMeta,
 } from "./transfer";
 export { looksLikeUrl, parseAllowedUrl } from "./url";
