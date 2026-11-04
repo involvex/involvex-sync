@@ -46,6 +46,8 @@ bun run isync -- clipboard push          # OS clipboard → phone
 bun run isync -- share https://example.com
 bun run isync -- find
 bun run isync -- show
+bun run isync -- keyboard type "hello"
+bun run isync -- keyboard key enter
 ```
 
 Desktop **Screenshot** (Send / Commands): `adb exec-out screencap -p` → PC

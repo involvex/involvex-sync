@@ -186,6 +186,16 @@ export default function App() {
   a11yReceiveRef.current = a11yReceive;
   a11yGrantedRef.current = a11yGranted;
 
+  const pushKeyboardStatus = useCallback(() => {
+    const mode =
+      imeReceiveRef.current && imeActiveRef.current
+        ? ("ime" as const)
+        : a11yReceiveRef.current && a11yGrantedRef.current
+          ? ("a11y" as const)
+          : ("none" as const);
+    sessionRef.current?.sendKeyboardStatus(mode !== "none", mode);
+  }, []);
+
   const log = useCallback((line: string) => {
     const stamp = new Date().toLocaleTimeString();
     setLogs((prev) => [`[${stamp}] ${line}`, ...prev].slice(0, 60));
@@ -305,11 +315,12 @@ export default function App() {
   useEffect(() => {
     const sub = addImeActiveListener((active) => {
       setImeActive(active);
-      sessionRef.current?.sendKeyboardStatus(active && imeReceiveRef.current);
+      imeActiveRef.current = active;
+      pushKeyboardStatus();
       log(active ? "Sync Keyboard active" : "Sync Keyboard inactive");
     });
     return () => sub.remove();
-  }, [log]);
+  }, [log, pushKeyboardStatus]);
 
   useEffect(() => {
     if (!identity) return;
@@ -566,6 +577,12 @@ export default function App() {
         ) {
           /* keep busy until timeout/cancel so UI can distinguish */
         }
+        if (
+          nextStatus.startsWith("connected") ||
+          nextStatus.startsWith("Paired")
+        ) {
+          pushKeyboardStatus();
+        }
       },
       onLog: log,
     });
@@ -578,6 +595,7 @@ export default function App() {
     pushHistory,
     host,
     startFindPhone,
+    pushKeyboardStatus,
   ]);
 
   useEffect(() => {
@@ -1382,7 +1400,8 @@ export default function App() {
                   void (async () => {
                     await setImeReceiveEnabled(next);
                     setImeReceive(next);
-                    sessionRef.current?.sendKeyboardStatus(next && imeActive);
+                    imeReceiveRef.current = next;
+                    pushKeyboardStatus();
                     log(next ? "receive keyboard on" : "receive keyboard off");
                   })();
                 }}
@@ -1412,12 +1431,19 @@ export default function App() {
                     if (next && !(await isA11yServiceGranted())) {
                       log("enable involvex Sync input in Accessibility");
                       await openAccessibilitySettings();
-                      setA11yGranted(await isA11yServiceGranted());
+                      const granted = await isA11yServiceGranted();
+                      setA11yGranted(granted);
+                      a11yGrantedRef.current = granted;
+                      pushKeyboardStatus();
                       return;
                     }
                     await setA11yReceiveEnabled(next);
                     setA11yReceive(next);
-                    setA11yGranted(await isA11yServiceGranted());
+                    a11yReceiveRef.current = next;
+                    const granted = await isA11yServiceGranted();
+                    setA11yGranted(granted);
+                    a11yGrantedRef.current = granted;
+                    pushKeyboardStatus();
                     log(
                       next
                         ? "a11y keyboard receive on"
@@ -1433,7 +1459,10 @@ export default function App() {
               style={styles.linkBtn}
               onPress={() => {
                 void openAccessibilitySettings().then(async () => {
-                  setA11yGranted(await isA11yServiceGranted());
+                  const granted = await isA11yServiceGranted();
+                  setA11yGranted(granted);
+                  a11yGrantedRef.current = granted;
+                  pushKeyboardStatus();
                 });
               }}
             >

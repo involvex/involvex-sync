@@ -76,7 +76,10 @@ export type SessionHandlers = {
     },
     from: string,
   ) => void | Promise<void>;
-  onKeyboardStatus?: (active: boolean) => void | Promise<void>;
+  onKeyboardStatus?: (
+    active: boolean,
+    mode?: "ime" | "a11y" | "none",
+  ) => void | Promise<void>;
   onPairRequest?: (request: PairRequestPayload) => void | Promise<void>;
   onRemoteCommand?: (
     request: RemoteCommandRequest,
@@ -270,7 +273,7 @@ export class SyncSession {
         break;
       }
       case "keyboard_status": {
-        await this.handlers.onKeyboardStatus?.(payload.active);
+        await this.handlers.onKeyboardStatus?.(payload.active, payload.mode);
         break;
       }
       case "remote_command": {

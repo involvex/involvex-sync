@@ -77,6 +77,7 @@ export {
   type KeyPairHex,
   type KeyboardKeyId,
   type KeyboardKeyPayload,
+  type KeyboardReceiverMode,
   type KeyboardStatusPayload,
   type KeyboardTextPayload,
   type MessageBody,

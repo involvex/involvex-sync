@@ -167,9 +167,15 @@ export type KeyboardKeyPayload = {
   key: KeyboardKeyId;
 };
 
+/** Which phone path can inject PC keystrokes right now. */
+export type KeyboardReceiverMode = "ime" | "a11y" | "none";
+
 export type KeyboardStatusPayload = {
   type: "keyboard_status";
+  /** True when the phone will accept keyboard_text / keyboard_key. */
   active: boolean;
+  /** Optional; older phones omit this. Prefer over inferring from active alone. */
+  mode?: KeyboardReceiverMode;
 };
 
 export type FindPhonePayload = {

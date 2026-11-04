@@ -140,6 +140,19 @@ async fn handle(
             let _ = app.emit("isync-find", true);
             (202, "application/json", r#"{"ok":true}"#.into())
         }
+        ("POST", "/v1/keyboard") | ("POST", "/keyboard") => {
+            let payload = body.trim().to_string();
+            if payload.is_empty() {
+                (
+                    400,
+                    "application/json",
+                    r#"{"ok":false,"error":"empty keyboard payload"}"#.into(),
+                )
+            } else {
+                let _ = app.emit("isync-keyboard", payload);
+                (202, "application/json", r#"{"ok":true}"#.into())
+            }
+        }
         ("GET", "/v1/ready") => {
             let ready = ready.load(Ordering::Relaxed);
             (

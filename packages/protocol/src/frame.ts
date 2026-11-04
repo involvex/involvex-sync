@@ -12,6 +12,7 @@ import { bytesToHex } from "./hex";
 import type {
   DeviceKeys,
   KeyboardKeyId,
+  KeyboardReceiverMode,
   MessageBody,
   MessagePayload,
   RemoteShell,
@@ -242,8 +243,15 @@ export function keyboardStatusBody(
   from: string,
   active: boolean,
   to?: string,
+  mode?: KeyboardReceiverMode,
 ): MessageBody {
-  return createMessageBody(from, { type: "keyboard_status", active }, to);
+  return createMessageBody(
+    from,
+    mode
+      ? { type: "keyboard_status", active, mode }
+      : { type: "keyboard_status", active },
+    to,
+  );
 }
 
 export function findPhoneBody(

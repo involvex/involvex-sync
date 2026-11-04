@@ -125,7 +125,10 @@ export default function App() {
   const settingsRef = useRef(settings);
   settingsRef.current = settings;
   const [keyboardText, setKeyboardText] = useState("");
-  const [phoneImeActive, setPhoneImeActive] = useState(false);
+  const [phoneKeyboardActive, setPhoneKeyboardActive] = useState(false);
+  const [phoneKeyboardMode, setPhoneKeyboardMode] = useState<
+    "ime" | "a11y" | "none"
+  >("none");
   const [tab, setTab] = useState<NavTab>("connection");
   const [toasts, setToasts] = useState<Toast[]>([]);
   const [defaultIncomingDir, setDefaultIncomingDir] = useState("");
@@ -302,9 +305,16 @@ export default function App() {
           log(`notif failed: ${String(e)}`);
         }
       },
-      onKeyboardStatus: (active) => {
-        setPhoneImeActive(active);
-        log(active ? "phone IME active" : "phone IME inactive");
+      onKeyboardStatus: (active, mode) => {
+        const resolved =
+          mode ?? (active ? ("ime" as const) : ("none" as const));
+        setPhoneKeyboardActive(active);
+        setPhoneKeyboardMode(resolved);
+        log(
+          active
+            ? `phone keyboard ready (${resolved})`
+            : "phone keyboard inactive",
+        );
       },
       onPairRequest: (request) => {
         setPendingPair(request);
@@ -459,6 +469,45 @@ export default function App() {
             .catch((err) => log(`isync find failed: ${String(err)}`));
         }),
       );
+      unsubs.push(
+        await listen<string>("isync-keyboard", (e) => {
+          void (async () => {
+            const s = sessionRef.current;
+            if (!s) return;
+            try {
+              const raw = JSON.parse(e.payload) as {
+                type?: string;
+                text?: string;
+                key?: string;
+              };
+              if (raw.type === "text" && raw.text) {
+                await s.sendKeyboardText(raw.text);
+                log(`isync keyboard text (${raw.text.length} chars)`);
+                return;
+              }
+              if (raw.type === "key" && raw.key) {
+                await s.sendKeyboardKey(
+                  raw.key as
+                    | "enter"
+                    | "backspace"
+                    | "tab"
+                    | "escape"
+                    | "arrow_left"
+                    | "arrow_right"
+                    | "arrow_up"
+                    | "arrow_down"
+                    | "delete",
+                );
+                log(`isync keyboard key ${raw.key}`);
+                return;
+              }
+              log(`isync keyboard ignored: ${e.payload}`);
+            } catch (err) {
+              log(`isync keyboard failed: ${String(err)}`);
+            }
+          })();
+        }),
+      );
     })();
     return () => {
       for (const u of unsubs) u();
@@ -466,7 +515,7 @@ export default function App() {
   }, [log, pushHistory, toast]);
 
   const live = Boolean(peer && lan?.status.peerConnected);
-  const keyboardReady = settings.sendKeysToPhone && live && phoneImeActive;
+  const keyboardReady = settings.sendKeysToPhone && live && phoneKeyboardActive;
 
   async function onAcceptPair(): Promise<void> {
     if (!session || !pendingPair) return;
@@ -1110,19 +1159,27 @@ export default function App() {
               <span className={`light ${live ? "on" : ""}`}>
                 <span className="dot" /> WS live
               </span>
-              <span className={`light ${phoneImeActive ? "on" : ""}`}>
-                <span className="dot" /> Phone IME
+              <span className={`light ${phoneKeyboardActive ? "on" : ""}`}>
+                <span className="dot" />{" "}
+                {phoneKeyboardMode === "a11y"
+                  ? "Phone a11y"
+                  : phoneKeyboardMode === "ime"
+                    ? "Phone IME"
+                    : "Phone recv"}
               </span>
             </div>
             {keyboardReady ? (
-              <p className="status-ok">Typing to phone</p>
+              <p className="status-ok">
+                Typing to phone via{" "}
+                {phoneKeyboardMode === "a11y" ? "accessibility" : "IME"}
+              </p>
             ) : (
               <p className="muted small">
                 {!settings.sendKeysToPhone
                   ? "Enable “Send keys to phone” in Settings."
                   : !live
                     ? offlineHint
-                    : "Select Sync Keyboard on the phone, then focus a text field."}
+                    : "On the phone: select Sync Keyboard IME, or enable accessibility receive."}
               </p>
             )}
             <label className="stack">

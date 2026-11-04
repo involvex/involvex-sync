@@ -84,8 +84,12 @@ InVx Termux package: `com.involvex.termux_app`.
 3. Optional `AccessibilityService` (`invx-a11y`) injects into the focused
    field when IME is not selected. Separate opt-in toggle; never auto-enable.
 4. Gate: IME wins if active+enabled; else a11y if enabled+granted.
-5. Kill switches: phone receive toggles, desktop “Send keys to phone”.
-6. Out of scope: Bluetooth HID, mouse/touchpad, gamepad, screen scraping.
+5. Phone reports `keyboard_status` with `active` + `mode` (`ime` | `a11y` |
+   `none`) so the desktop Sync Keyboard tab unlocks for either path.
+6. CLI: `isync keyboard type …` / `isync keyboard key enter` via loopback
+   control (`POST /v1/keyboard`).
+7. Kill switches: phone receive toggles, desktop “Send keys to phone”.
+8. Out of scope: Bluetooth HID, mouse/touchpad, gamepad, screen scraping.
 
 ## Chunked file transfer
 

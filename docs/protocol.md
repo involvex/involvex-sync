@@ -28,6 +28,9 @@ Remote commands (`remote_command` / `remote_command_result`): `shell` is
 `pwsh` (phone→PC), `termux` (PC→phone via InVx Termux), or `adb` (local on
 PC only). Both sides require an explicit allow setting. Cap 2000 chars.
 
+`keyboard_status`: `{ active, mode? }` where `mode` is `ime` | `a11y` |
+`none`. Older clients may omit `mode`; treat `active` alone as IME-ready.
+
 ## Signed envelope
 
 ```json

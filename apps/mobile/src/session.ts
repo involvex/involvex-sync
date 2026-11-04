@@ -478,11 +478,16 @@ export class MobileSession {
     );
   }
 
-  sendKeyboardStatus(active: boolean): void {
+  sendKeyboardStatus(active: boolean, mode?: "ime" | "a11y" | "none"): void {
     if (!this.peer || !this.isOpen) return;
     try {
       this.sendFrame(
-        keyboardStatusBody(this.local.deviceId, active, this.peer.deviceId),
+        keyboardStatusBody(
+          this.local.deviceId,
+          active,
+          this.peer.deviceId,
+          mode,
+        ),
       );
     } catch {
       /* ignore */

@@ -32,8 +32,10 @@ Usage:
   isync clipboard push         Push OS clipboard to the phone
   isync share <url>            Send a link to the phone
   isync find                   Ring the phone
+  isync keyboard type [text]   Type text on the phone (IME or a11y)
+  isync keyboard key <id>      Send a key (enter, backspace, tab, …)
 
-Requires the desktop app running for share / push / find / status.
+Requires the desktop app running for share / push / find / keyboard / status.
 `);
   process.exit(exitCode);
 }
@@ -209,6 +211,60 @@ async function main(): Promise<void> {
     }
     console.log(`shared ${url}`);
     return;
+  }
+
+  if (cmd === "keyboard") {
+    await requireDesktop();
+    if (sub === "type") {
+      const text = rest.join(" ") || (await readStdin());
+      if (!text) {
+        console.error("nothing to type — pass text or pipe stdin");
+        process.exit(1);
+      }
+      const { status, text: body } = await control(
+        "POST",
+        "/v1/keyboard",
+        JSON.stringify({ type: "text", text }),
+      );
+      if (status >= 400) {
+        console.error(body);
+        process.exit(1);
+      }
+      console.log(`typed ${text.length} chars → phone`);
+      return;
+    }
+    if (sub === "key") {
+      const key = rest[0];
+      const allowed = new Set([
+        "enter",
+        "backspace",
+        "tab",
+        "escape",
+        "arrow_left",
+        "arrow_right",
+        "arrow_up",
+        "arrow_down",
+        "delete",
+      ]);
+      if (!key || !allowed.has(key)) {
+        console.error(
+          "need a key id: enter | backspace | tab | escape | arrow_* | delete",
+        );
+        process.exit(1);
+      }
+      const { status, text: body } = await control(
+        "POST",
+        "/v1/keyboard",
+        JSON.stringify({ type: "key", key }),
+      );
+      if (status >= 400) {
+        console.error(body);
+        process.exit(1);
+      }
+      console.log(`key ${key} → phone`);
+      return;
+    }
+    usage();
   }
 
   if (cmd === "clipboard") {
