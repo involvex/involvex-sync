@@ -1,0 +1,6 @@
+{
+  "platforms": ["android"],
+  "android": {
+    "modules": ["app.involvex.sync.a11y.InvxA11yModule"]
+  }
+}

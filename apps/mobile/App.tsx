@@ -31,6 +31,14 @@ import {
 } from "react-native";
 import { SafeAreaProvider, SafeAreaView } from "react-native-safe-area-context";
 import {
+  a11yInjectKey,
+  a11yInjectText,
+  isA11yReceiveEnabled,
+  isA11yServiceGranted,
+  openAccessibilitySettings,
+  setA11yReceiveEnabled,
+} from "./modules/invx-a11y/src";
+import {
   addImeActiveListener,
   imeCommitText,
   imeSendKey,
@@ -150,6 +158,8 @@ export default function App() {
   const [listenerGranted, setListenerGranted] = useState(false);
   const [imeReceive, setImeReceive] = useState(false);
   const [imeActive, setImeActive] = useState(false);
+  const [a11yReceive, setA11yReceive] = useState(false);
+  const [a11yGranted, setA11yGranted] = useState(false);
   const [finding, setFinding] = useState(false);
   const [appSettings, setAppSettings] = useState<MobileAppSettings>({
     incomingFilesUri: "",
@@ -161,6 +171,8 @@ export default function App() {
   const sessionRef = useRef<MobileSession | null>(null);
   const imeReceiveRef = useRef(false);
   const imeActiveRef = useRef(false);
+  const a11yReceiveRef = useRef(false);
+  const a11yGrantedRef = useRef(false);
   const appSettingsRef = useRef(appSettings);
   const findTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pairTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -171,6 +183,8 @@ export default function App() {
 
   imeReceiveRef.current = imeReceive;
   imeActiveRef.current = imeActive;
+  a11yReceiveRef.current = a11yReceive;
+  a11yGrantedRef.current = a11yGranted;
 
   const log = useCallback((line: string) => {
     const stamp = new Date().toLocaleTimeString();
@@ -236,6 +250,8 @@ export default function App() {
       setListenerGranted(await isNotifyListenerGranted());
       setImeReceive(await isImeReceiveEnabled());
       setImeActive(await isImeActive());
+      setA11yReceive(await isA11yReceiveEnabled());
+      setA11yGranted(await isA11yServiceGranted());
       setAppSettings(await loadAppSettings());
     })();
   }, []);
@@ -459,20 +475,30 @@ export default function App() {
         log(`pc result: ${result.ok ? "ok" : "fail"}`);
       },
       onKeyboardText: async (text) => {
-        if (!imeReceiveRef.current || !imeActiveRef.current) {
-          log("keyboard ignored (IME off or inactive)");
+        if (imeReceiveRef.current && imeActiveRef.current) {
+          const ok = await imeCommitText(text);
+          log(ok ? `typed ${text.length} chars (IME)` : "IME commit failed");
           return;
         }
-        const ok = await imeCommitText(text);
-        log(ok ? `typed ${text.length} chars` : "IME commit failed");
+        if (a11yReceiveRef.current && a11yGrantedRef.current) {
+          const ok = await a11yInjectText(text);
+          log(ok ? `typed ${text.length} chars (a11y)` : "a11y inject failed");
+          return;
+        }
+        log("keyboard ignored (enable IME or accessibility receive)");
       },
       onKeyboardKey: async (key) => {
-        if (!imeReceiveRef.current || !imeActiveRef.current) {
-          log("keyboard key ignored");
+        if (imeReceiveRef.current && imeActiveRef.current) {
+          const ok = await imeSendKey(key);
+          log(ok ? `key ${key} (IME)` : `key ${key} failed`);
           return;
         }
-        const ok = await imeSendKey(key);
-        log(ok ? `key ${key}` : `key ${key} failed`);
+        if (a11yReceiveRef.current && a11yGrantedRef.current) {
+          const ok = await a11yInjectKey(key);
+          log(ok ? `key ${key} (a11y)` : `a11y key ${key} failed`);
+          return;
+        }
+        log("keyboard key ignored");
       },
       onFindPhone: (durationMs) => {
         startFindPhone(durationMs);
@@ -1369,6 +1395,53 @@ export default function App() {
               onPress={() => void openImeSettings()}
             >
               <Text style={styles.linkText}>Open IME settings</Text>
+            </Pressable>
+            <View style={styles.settingRow}>
+              <View style={styles.settingCopy}>
+                <Text style={styles.body}>Receive via accessibility</Text>
+                <Text style={styles.muted}>
+                  {a11yGranted
+                    ? "Service on — used when IME is not selected"
+                    : "Needs Accessibility access (opt-in)"}
+                </Text>
+              </View>
+              <Switch
+                value={a11yReceive}
+                onValueChange={(next) => {
+                  void (async () => {
+                    if (next && !(await isA11yServiceGranted())) {
+                      log("enable involvex Sync input in Accessibility");
+                      await openAccessibilitySettings();
+                      setA11yGranted(await isA11yServiceGranted());
+                      return;
+                    }
+                    await setA11yReceiveEnabled(next);
+                    setA11yReceive(next);
+                    setA11yGranted(await isA11yServiceGranted());
+                    log(
+                      next
+                        ? "a11y keyboard receive on"
+                        : "a11y keyboard receive off",
+                    );
+                  })();
+                }}
+                trackColor={{ false: "#243352", true: "#3d7eff" }}
+                thumbColor="#e8eef8"
+              />
+            </View>
+            <Pressable
+              style={styles.linkBtn}
+              onPress={() => {
+                void openAccessibilitySettings().then(async () => {
+                  setA11yGranted(await isA11yServiceGranted());
+                });
+              }}
+            >
+              <Text style={styles.linkText}>
+                {a11yGranted
+                  ? "Manage Accessibility access"
+                  : "Open Accessibility settings"}
+              </Text>
             </Pressable>
             <View style={styles.divider} />
             <View style={styles.settingRow}>

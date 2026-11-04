@@ -81,8 +81,11 @@ InVx Termux package: `com.involvex.termux_app`.
    `keyboard_status` from the phone when the IME is active.
 2. Android `InputMethodService` (`invx-ime`) — user enables and selects
    “involvex Sync Keyboard”; never auto-enable.
-3. Kill switches: phone “Receive keyboard from PC”, desktop “Send keys to phone”.
-4. Out of scope: Bluetooth HID, mouse/touchpad, gamepad.
+3. Optional `AccessibilityService` (`invx-a11y`) injects into the focused
+   field when IME is not selected. Separate opt-in toggle; never auto-enable.
+4. Gate: IME wins if active+enabled; else a11y if enabled+granted.
+5. Kill switches: phone receive toggles, desktop “Send keys to phone”.
+6. Out of scope: Bluetooth HID, mouse/touchpad, gamepad, screen scraping.
 
 ## Chunked file transfer
 

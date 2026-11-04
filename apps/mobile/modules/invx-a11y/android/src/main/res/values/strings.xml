@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+  <string name="invx_a11y_summary">Type from PC into the focused field</string>
+  <string name="invx_a11y_description">Optional: lets involvex Sync insert text from your PC into the currently focused text field when Sync Keyboard IME is not selected. Only injects what you send from the paired PC. Does not read passwords for upload or log keystrokes.</string>
+</resources>
