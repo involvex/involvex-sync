@@ -59,6 +59,7 @@ import {
 } from "./services/folderSyncLedger";
 import {
   loadSettings,
+  resolveThemeMode,
   saveSettings,
   type DesktopSettings,
 } from "./services/settings";
@@ -176,6 +177,24 @@ export default function App() {
   const folderSyncQueueRef = useRef<FolderSyncReady[]>([]);
   const folderSyncBusyRef = useRef(false);
   const folderSyncRootRef = useRef(settings.folderSyncDir);
+  const sendClipboardRef = useRef<() => Promise<void>>(async () => {});
+
+  useEffect(() => {
+    const applyTheme = () => {
+      const systemDark = window.matchMedia(
+        "(prefers-color-scheme: dark)",
+      ).matches;
+      const mode = resolveThemeMode(settings.theme, systemDark);
+      document.documentElement.dataset.theme = mode;
+    };
+    applyTheme();
+    const mq = window.matchMedia("(prefers-color-scheme: dark)");
+    const onChange = () => {
+      if (settings.theme === "system") applyTheme();
+    };
+    mq.addEventListener("change", onChange);
+    return () => mq.removeEventListener("change", onChange);
+  }, [settings.theme]);
 
   const log = useCallback((line: string) => {
     const stamp = new Date().toLocaleTimeString();
@@ -812,6 +831,17 @@ export default function App() {
       toast("Send failed", "err");
     }
   }
+  sendClipboardRef.current = onSendClipboard;
+
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    void listen("tray-send-clipboard", () => {
+      void sendClipboardRef.current();
+    }).then((fn) => {
+      unlisten = fn;
+    });
+    return () => unlisten?.();
+  }, []);
 
   async function onUnpair(): Promise<void> {
     await clearPeer();
@@ -1557,6 +1587,29 @@ export default function App() {
           <div className="panel-grid">
             <article className="card">
               <h2>Settings</h2>
+              <p className="muted small">Theme</p>
+              <div className="theme-row">
+                {(
+                  [
+                    ["system", "System"],
+                    ["light", "Light"],
+                    ["dark", "Dark"],
+                  ] as const
+                ).map(([id, label]) => (
+                  <button
+                    key={id}
+                    type="button"
+                    className={settings.theme === id ? "active" : "ghost"}
+                    onClick={() => {
+                      const next = saveSettings({ theme: id });
+                      setSettings(next);
+                      log(`theme → ${id}`);
+                    }}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
               <label className="check">
                 <input
                   type="checkbox"
@@ -1658,8 +1711,9 @@ export default function App() {
               </label>
               <p className="muted small">
                 Leave incoming blank for default:{" "}
-                {defaultIncomingDir || "Downloads/involvex-Sync"}. Close /
-                minimize hides to the tray. Pair requests always notify.
+                {defaultIncomingDir || "Downloads/involvex-Sync"}. Close or
+                minimize hides to the tray (tray menu: Open, Send clipboard,
+                Quit). Pair requests always notify.
               </p>
             </article>
 

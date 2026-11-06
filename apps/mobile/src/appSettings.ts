@@ -1,4 +1,5 @@
 import * as SecureStore from "expo-secure-store";
+import type { ThemePreference } from "./theme";
 
 const KEY = "invx.mobile.appSettings";
 
@@ -12,13 +13,23 @@ export type MobileAppSettings = {
   incomingFilesLabel: string;
   /** Allow PC to run Termux commands on this phone. Default false. */
   allowRemoteTermux: boolean;
+  /** Appearance preference. Default system. */
+  theme: ThemePreference;
 };
 
 const defaults: MobileAppSettings = {
   incomingFilesUri: "",
   incomingFilesLabel: "",
   allowRemoteTermux: false,
+  theme: "system",
 };
+
+function parseTheme(value: unknown): ThemePreference {
+  if (value === "light" || value === "dark" || value === "system") {
+    return value;
+  }
+  return defaults.theme;
+}
 
 export async function loadAppSettings(): Promise<MobileAppSettings> {
   try {
@@ -41,6 +52,7 @@ export async function loadAppSettings(): Promise<MobileAppSettings> {
         typeof parsed.allowRemoteTermux === "boolean"
           ? parsed.allowRemoteTermux
           : defaults.allowRemoteTermux,
+      theme: parseTheme(parsed.theme),
     };
   } catch {
     return { ...defaults };
@@ -64,6 +76,7 @@ export async function saveAppSettings(
       typeof patch.allowRemoteTermux === "boolean"
         ? patch.allowRemoteTermux
         : current.allowRemoteTermux,
+    theme: patch.theme !== undefined ? parseTheme(patch.theme) : current.theme,
   };
   await SecureStore.setItemAsync(KEY, JSON.stringify(next));
   return next;

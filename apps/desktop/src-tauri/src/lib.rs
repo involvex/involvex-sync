@@ -15,7 +15,7 @@ use std::sync::Arc;
 use tauri::{
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    AppHandle, Manager, RunEvent, State, WindowEvent,
+    AppHandle, Emitter, Manager, RunEvent, State, WindowEvent,
 };
 use ws::WsHub;
 
@@ -222,14 +222,19 @@ fn read_sync_file(path: String, root: String) -> Result<folder_sync::SyncFilePay
 
 fn setup_tray(app: &tauri::App) -> tauri::Result<()> {
     let show_i = MenuItem::with_id(app, "show", "Open involvex Sync", true, None::<&str>)?;
+    let send_clip_i =
+        MenuItem::with_id(app, "send_clipboard", "Send clipboard", true, None::<&str>)?;
     let quit_i = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
-    let menu = Menu::with_items(app, &[&show_i, &quit_i])?;
+    let menu = Menu::with_items(app, &[&show_i, &send_clip_i, &quit_i])?;
 
     let mut builder = TrayIconBuilder::with_id("tray")
         .menu(&menu)
         .tooltip("involvex Sync")
         .on_menu_event(|app, event| match event.id.as_ref() {
             "show" => show_main_window(app),
+            "send_clipboard" => {
+                let _ = app.emit("tray-send-clipboard", ());
+            }
             "quit" => app.exit(0),
             _ => {}
         })
@@ -348,16 +353,31 @@ pub fn run() {
     app.run(|app, event| {
         if let RunEvent::WindowEvent {
             label,
-            event: WindowEvent::CloseRequested { api, .. },
+            event: window_event,
             ..
         } = &event
         {
-            if label == "main" {
-                api.prevent_close();
-                if let Some(window) = app.get_webview_window("main") {
-                    let _ = window.hide();
-                    bootlog::write("main window hidden to tray");
+            if label != "main" {
+                return;
+            }
+            match window_event {
+                WindowEvent::CloseRequested { api, .. } => {
+                    api.prevent_close();
+                    if let Some(window) = app.get_webview_window("main") {
+                        let _ = window.hide();
+                        bootlog::write("main window hidden to tray");
+                    }
                 }
+                WindowEvent::Resized(_) => {
+                    if let Some(window) = app.get_webview_window("main") {
+                        if window.is_minimized().unwrap_or(false) {
+                            let _ = window.hide();
+                            let _ = window.unminimize();
+                            bootlog::write("main window minimized → tray");
+                        }
+                    }
+                }
+                _ => {}
             }
         }
     });

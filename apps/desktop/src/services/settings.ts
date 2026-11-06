@@ -1,5 +1,7 @@
 const KEY = "invx.settings";
 
+export type ThemePreference = "system" | "light" | "dark";
+
 export type DesktopSettings = {
   /** Show mirrored phone notifications as OS toasts. Default false. */
   showPhoneNotifications: boolean;
@@ -13,6 +15,8 @@ export type DesktopSettings = {
   folderSyncEnabled: boolean;
   /** PC folder watched for outbound sync. */
   folderSyncDir: string;
+  /** Appearance preference. Default system. */
+  theme: ThemePreference;
 };
 
 const defaults: DesktopSettings = {
@@ -22,13 +26,26 @@ const defaults: DesktopSettings = {
   allowRemotePwsh: false,
   folderSyncEnabled: false,
   folderSyncDir: "I:\\Downloads\\Involvex-Sync",
+  theme: "system",
 };
+
+function parseTheme(value: unknown): ThemePreference {
+  if (value === "light" || value === "dark" || value === "system") {
+    return value;
+  }
+  return defaults.theme;
+}
 
 export function loadSettings(): DesktopSettings {
   try {
     const raw = localStorage.getItem(KEY);
     if (!raw) return { ...defaults };
-    return { ...defaults, ...(JSON.parse(raw) as DesktopSettings) };
+    const parsed = JSON.parse(raw) as Partial<DesktopSettings>;
+    return {
+      ...defaults,
+      ...parsed,
+      theme: parseTheme(parsed.theme),
+    };
   } catch {
     return { ...defaults };
   }
@@ -36,6 +53,16 @@ export function loadSettings(): DesktopSettings {
 
 export function saveSettings(patch: Partial<DesktopSettings>): DesktopSettings {
   const next = { ...loadSettings(), ...patch };
+  if (patch.theme !== undefined) next.theme = parseTheme(patch.theme);
   localStorage.setItem(KEY, JSON.stringify(next));
   return next;
+}
+
+export function resolveThemeMode(
+  preference: ThemePreference,
+  systemDark: boolean,
+): "light" | "dark" {
+  if (preference === "light") return "light";
+  if (preference === "dark") return "dark";
+  return systemDark ? "dark" : "light";
 }
