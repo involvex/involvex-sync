@@ -9,7 +9,11 @@ export type LedgerEntry = {
 
 export type FolderSyncLedger = Record<LedgerKey, LedgerEntry>;
 
-export function ledgerKey(relativeName: string, size: number, mtimeMs: number): LedgerKey {
+export function ledgerKey(
+  relativeName: string,
+  size: number,
+  mtimeMs: number,
+): LedgerKey {
   return `${relativeName}|${size}|${mtimeMs}`;
 }
 

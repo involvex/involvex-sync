@@ -555,41 +555,42 @@ export default function App() {
   liveRef.current = live;
   const keyboardReady = settings.sendKeysToPhone && live && phoneKeyboardActive;
 
-  const enqueueFolderSync = useCallback((item: FolderSyncReady) => {
-    if (
-      isSynced(
-        folderSyncLedgerRef.current,
-        item.relativeName,
-        item.size,
-        item.mtimeMs,
-      )
-    ) {
-      return;
-    }
-    if (item.size > MAX_CHUNKED_FILE_BYTES) {
-      log(
-        `folder sync skip ${item.relativeName} (${item.size} B > cap)`,
-      );
-      return;
-    }
-    const q = folderSyncQueueRef.current;
-    if (
-      q.some(
-        (x) =>
-          x.path === item.path &&
-          x.size === item.size &&
-          x.mtimeMs === item.mtimeMs,
-      )
-    ) {
-      return;
-    }
-    // Bound offline queue.
-    if (q.length >= 40) {
-      q.shift();
-    }
-    q.push(item);
-    setFolderSyncStatus(`queued ${q.length}`);
-  }, [log]);
+  const enqueueFolderSync = useCallback(
+    (item: FolderSyncReady) => {
+      if (
+        isSynced(
+          folderSyncLedgerRef.current,
+          item.relativeName,
+          item.size,
+          item.mtimeMs,
+        )
+      ) {
+        return;
+      }
+      if (item.size > MAX_CHUNKED_FILE_BYTES) {
+        log(`folder sync skip ${item.relativeName} (${item.size} B > cap)`);
+        return;
+      }
+      const q = folderSyncQueueRef.current;
+      if (
+        q.some(
+          (x) =>
+            x.path === item.path &&
+            x.size === item.size &&
+            x.mtimeMs === item.mtimeMs,
+        )
+      ) {
+        return;
+      }
+      // Bound offline queue.
+      if (q.length >= 40) {
+        q.shift();
+      }
+      q.push(item);
+      setFolderSyncStatus(`queued ${q.length}`);
+    },
+    [log],
+  );
 
   const drainFolderSyncQueue = useCallback(async () => {
     if (folderSyncBusyRef.current) return;
@@ -645,7 +646,9 @@ export default function App() {
         } catch (e) {
           log(`folder sync failed ${item.relativeName}: ${String(e)}`);
           // Leave at front; pause until next reconnect/drain.
-          setFolderSyncStatus(`error · queued ${folderSyncQueueRef.current.length}`);
+          setFolderSyncStatus(
+            `error · queued ${folderSyncQueueRef.current.length}`,
+          );
           break;
         }
       }
@@ -710,12 +713,7 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, [
-    settings.folderSyncEnabled,
-    settings.folderSyncDir,
-    log,
-    scanFolderSync,
-  ]);
+  }, [settings.folderSyncEnabled, settings.folderSyncDir, log, scanFolderSync]);
 
   useEffect(() => {
     let unlisten: (() => void) | undefined;
