@@ -60,10 +60,18 @@ Install a global shim (optional): `bun link --cwd apps/cli` then `isync status`.
 Requires a **development build** (not Expo Go):
 
 ```bash
+# from repo root
+bun run mobile:start     # Metro only
+bun run android          # debug install + Metro
+bun run mobile:build     # release install, no Metro (--no-bundler)
+
 cd apps/mobile
 bunx expo prebuild --platform android
-bun run android
+bun run build:apk        # APK only (needs android/ from prebuild)
 ```
+
+`mobile:build` uses `--no-bundler` so it does not steal a running Expo/Metro session.
+Release APK: `apps/mobile/android/app/build/outputs/apk/release/app-release.apk`.
 
 1. On the phone: **Nearby → Pair** (mDNS) or **Scan PC QR** (desktop Connection tab). Accept the pair banner on the PC (OS toast + window come forward).
 2. After accept, status should read **Paired and connected**. Or paste desktop JSON under Advanced and tap **Connect**.

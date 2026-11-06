@@ -9,6 +9,10 @@ export type DesktopSettings = {
   incomingFilesDir: string;
   /** Allow phone to run PowerShell on this PC. Default false. */
   allowRemotePwsh: boolean;
+  /** Watch a PC folder and push new files to the phone. Default false. */
+  folderSyncEnabled: boolean;
+  /** PC folder watched for outbound sync. */
+  folderSyncDir: string;
 };
 
 const defaults: DesktopSettings = {
@@ -16,6 +20,8 @@ const defaults: DesktopSettings = {
   sendKeysToPhone: false,
   incomingFilesDir: "",
   allowRemotePwsh: false,
+  folderSyncEnabled: false,
+  folderSyncDir: "I:\\Downloads\\Involvex-Sync",
 };
 
 export function loadSettings(): DesktopSettings {

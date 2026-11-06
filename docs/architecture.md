@@ -72,6 +72,11 @@ InVx Termux package: `com.involvex.termux_app`.
 - Incoming files: configurable folder (desktop path; phone Documents subfolder).
 - Desktop Files tab sends via HTML file picker; phone uses document picker /
   Android Share.
+- **Folder sync (PC → phone):** opt-in watch on a PC directory (default
+  `I:\Downloads\Involvex-Sync`). New/changed files debounce then send via the
+  existing chunked transfer into the phone SAF save folder. Subpaths flatten
+  (`sub/a.pdf` → `sub__a.pdf`). Ledger in localStorage avoids re-sends. Soft
+  cap 100 MiB; offline queue flushes when Live again.
 - `remote_command`: phone → PowerShell on PC (opt-in); PC → Termux bash on
   phone (opt-in); PC also runs local `adb shell` without the wire protocol.
 

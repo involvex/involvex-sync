@@ -1,6 +1,7 @@
 mod bootlog;
 mod control;
 mod firewall;
+mod folder_sync;
 mod keys;
 mod mdns;
 mod shell;
@@ -23,6 +24,7 @@ const DEFAULT_PORT: u16 = 17391;
 struct AppState {
     hub: Arc<WsHub>,
     mdns: Mutex<Option<MdnsAdvertiser>>,
+    folder_sync: folder_sync::FolderSyncState,
 }
 
 #[derive(Serialize)]
@@ -193,6 +195,31 @@ fn show_main_window_cmd(app: AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+#[tauri::command]
+fn start_folder_sync(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    dir: String,
+) -> Result<String, String> {
+    folder_sync::start_watch(app, &state.folder_sync, dir)
+}
+
+#[tauri::command]
+fn stop_folder_sync(state: State<'_, AppState>) -> Result<(), String> {
+    folder_sync::stop_watch(&state.folder_sync);
+    Ok(())
+}
+
+#[tauri::command]
+fn list_sync_files(dir: String) -> Result<Vec<folder_sync::SyncFileInfo>, String> {
+    folder_sync::list_files(dir)
+}
+
+#[tauri::command]
+fn read_sync_file(path: String, root: String) -> Result<folder_sync::SyncFilePayload, String> {
+    folder_sync::read_file(path, root)
+}
+
 fn setup_tray(app: &tauri::App) -> tauri::Result<()> {
     let show_i = MenuItem::with_id(app, "show", "Open involvex Sync", true, None::<&str>)?;
     let quit_i = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
@@ -246,6 +273,7 @@ pub fn run() {
         .manage(AppState {
             hub: hub.clone(),
             mdns: Mutex::new(None),
+            folder_sync: folder_sync::FolderSyncState::default(),
         })
         .setup(move |app| {
             bootlog::write("setup begin");
@@ -300,6 +328,10 @@ pub fn run() {
             run_adb_shell,
             adb_screencap,
             show_main_window_cmd,
+            start_folder_sync,
+            stop_folder_sync,
+            list_sync_files,
+            read_sync_file,
         ])
         .build(tauri::generate_context!())
     {

@@ -4,6 +4,7 @@ import {
   buildPairingPayload,
   deviceFingerprint,
   encryptFrame,
+  fromBase64,
   pairingQrText,
   parseAllowedUrl,
   parsePairingQr,
@@ -51,11 +52,40 @@ import {
 import { RelayClient } from "./services/relay";
 import { SyncSession } from "./services/session";
 import {
+  isSynced,
+  loadLedger,
+  markSynced,
+  type FolderSyncLedger,
+} from "./services/folderSyncLedger";
+import {
   loadSettings,
   saveSettings,
   type DesktopSettings,
 } from "./services/settings";
 import "./App.css";
+
+type SyncFileInfo = {
+  path: string;
+  relativeName: string;
+  size: number;
+  mtimeMs: number;
+};
+
+type SyncFilePayload = {
+  name: string;
+  mimeType: string;
+  dataBase64: string;
+  size: number;
+  mtimeMs: number;
+  relativeName: string;
+};
+
+type FolderSyncReady = {
+  path: string;
+  relativeName: string;
+  size: number;
+  mtimeMs: number;
+};
 
 type LanInfo = {
   ip: string | null;
@@ -136,10 +166,16 @@ export default function App() {
   const [adbCmd, setAdbCmd] = useState("");
   const [cmdOutput, setCmdOutput] = useState("");
   const [screenshotBusy, setScreenshotBusy] = useState(false);
+  const [folderSyncStatus, setFolderSyncStatus] = useState("off");
+  const [folderSyncLast, setFolderSyncLast] = useState("");
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   const sessionRef = useRef<SyncSession | null>(null);
   const messageQueueRef = useRef<string[]>([]);
+  const folderSyncLedgerRef = useRef<FolderSyncLedger>(loadLedger());
+  const folderSyncQueueRef = useRef<FolderSyncReady[]>([]);
+  const folderSyncBusyRef = useRef(false);
+  const folderSyncRootRef = useRef(settings.folderSyncDir);
 
   const log = useCallback((line: string) => {
     const stamp = new Date().toLocaleTimeString();
@@ -515,7 +551,189 @@ export default function App() {
   }, [log, pushHistory, toast]);
 
   const live = Boolean(peer && lan?.status.peerConnected);
+  const liveRef = useRef(live);
+  liveRef.current = live;
   const keyboardReady = settings.sendKeysToPhone && live && phoneKeyboardActive;
+
+  const enqueueFolderSync = useCallback((item: FolderSyncReady) => {
+    if (
+      isSynced(
+        folderSyncLedgerRef.current,
+        item.relativeName,
+        item.size,
+        item.mtimeMs,
+      )
+    ) {
+      return;
+    }
+    if (item.size > MAX_CHUNKED_FILE_BYTES) {
+      log(
+        `folder sync skip ${item.relativeName} (${item.size} B > cap)`,
+      );
+      return;
+    }
+    const q = folderSyncQueueRef.current;
+    if (
+      q.some(
+        (x) =>
+          x.path === item.path &&
+          x.size === item.size &&
+          x.mtimeMs === item.mtimeMs,
+      )
+    ) {
+      return;
+    }
+    // Bound offline queue.
+    if (q.length >= 40) {
+      q.shift();
+    }
+    q.push(item);
+    setFolderSyncStatus(`queued ${q.length}`);
+  }, [log]);
+
+  const drainFolderSyncQueue = useCallback(async () => {
+    if (folderSyncBusyRef.current) return;
+    folderSyncBusyRef.current = true;
+    try {
+      while (folderSyncQueueRef.current.length > 0) {
+        if (!liveRef.current || !sessionRef.current) {
+          setFolderSyncStatus(
+            `queued ${folderSyncQueueRef.current.length} (offline)`,
+          );
+          break;
+        }
+        const item = folderSyncQueueRef.current[0];
+        if (
+          isSynced(
+            folderSyncLedgerRef.current,
+            item.relativeName,
+            item.size,
+            item.mtimeMs,
+          )
+        ) {
+          folderSyncQueueRef.current.shift();
+          continue;
+        }
+        setFolderSyncStatus(`sending ${item.relativeName}`);
+        try {
+          const root = folderSyncRootRef.current;
+          const payload = await invoke<SyncFilePayload>("read_sync_file", {
+            path: item.path,
+            root,
+          });
+          if (payload.size > MAX_CHUNKED_FILE_BYTES) {
+            log(`folder sync skip ${payload.relativeName} (too large)`);
+            folderSyncQueueRef.current.shift();
+            continue;
+          }
+          const data = fromBase64(payload.dataBase64);
+          await sessionRef.current.sendFile({
+            name: payload.name,
+            mimeType: payload.mimeType || "application/octet-stream",
+            data,
+          });
+          folderSyncLedgerRef.current = markSynced(
+            folderSyncLedgerRef.current,
+            payload.relativeName,
+            payload.size,
+            payload.mtimeMs,
+          );
+          folderSyncQueueRef.current.shift();
+          setFolderSyncLast(payload.relativeName);
+          log(`folder sync → ${payload.relativeName} (${payload.size} B)`);
+          toast(`Synced ${payload.relativeName}`, "ok");
+        } catch (e) {
+          log(`folder sync failed ${item.relativeName}: ${String(e)}`);
+          // Leave at front; pause until next reconnect/drain.
+          setFolderSyncStatus(`error · queued ${folderSyncQueueRef.current.length}`);
+          break;
+        }
+      }
+      if (folderSyncQueueRef.current.length === 0) {
+        setFolderSyncStatus(
+          settingsRef.current.folderSyncEnabled ? "watching" : "off",
+        );
+      }
+    } finally {
+      folderSyncBusyRef.current = false;
+    }
+  }, [log, toast]);
+
+  const scanFolderSync = useCallback(async () => {
+    const dir = settingsRef.current.folderSyncDir.trim();
+    if (!dir) return;
+    try {
+      const files = await invoke<SyncFileInfo[]>("list_sync_files", { dir });
+      for (const f of files) {
+        enqueueFolderSync({
+          path: f.path,
+          relativeName: f.relativeName,
+          size: f.size,
+          mtimeMs: f.mtimeMs,
+        });
+      }
+      void drainFolderSyncQueue();
+    } catch (e) {
+      log(`folder sync scan: ${String(e)}`);
+    }
+  }, [drainFolderSyncQueue, enqueueFolderSync, log]);
+
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      if (!settings.folderSyncEnabled) {
+        try {
+          await invoke("stop_folder_sync");
+        } catch {
+          /* ignore */
+        }
+        if (!cancelled) setFolderSyncStatus("off");
+        return;
+      }
+      const dir =
+        settings.folderSyncDir.trim() || "I:\\Downloads\\Involvex-Sync";
+      folderSyncRootRef.current = dir;
+      try {
+        const root = await invoke<string>("start_folder_sync", { dir });
+        if (cancelled) return;
+        folderSyncRootRef.current = root;
+        setFolderSyncStatus("watching");
+        log(`folder sync watching ${root}`);
+        await scanFolderSync();
+      } catch (e) {
+        if (!cancelled) {
+          setFolderSyncStatus("error");
+          log(`folder sync start: ${String(e)}`);
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    settings.folderSyncEnabled,
+    settings.folderSyncDir,
+    log,
+    scanFolderSync,
+  ]);
+
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    void listen<FolderSyncReady>("folder-sync-ready", (e) => {
+      enqueueFolderSync(e.payload);
+      void drainFolderSyncQueue();
+    }).then((fn) => {
+      unlisten = fn;
+    });
+    return () => {
+      unlisten?.();
+    };
+  }, [drainFolderSyncQueue, enqueueFolderSync]);
+
+  useEffect(() => {
+    if (!live) return;
+    void drainFolderSyncQueue();
+  }, [live, drainFolderSyncQueue]);
 
   async function onAcceptPair(): Promise<void> {
     if (!session || !pendingPair) return;
@@ -1076,9 +1294,58 @@ export default function App() {
                 Send file to phone
               </button>
             </div>
+            <hr className="divider" />
+            <h3>Folder sync → phone</h3>
+            <label className="check">
+              <input
+                type="checkbox"
+                checked={settings.folderSyncEnabled}
+                onChange={(e) => {
+                  const next = saveSettings({
+                    folderSyncEnabled: e.target.checked,
+                  });
+                  setSettings(next);
+                  log(
+                    next.folderSyncEnabled
+                      ? "folder sync on"
+                      : "folder sync off",
+                  );
+                }}
+              />
+              Watch PC folder and auto-send new files
+            </label>
+            <label className="stack">
+              Sync folder
+              <input
+                value={settings.folderSyncDir}
+                onChange={(e) => {
+                  const next = saveSettings({
+                    folderSyncDir: e.target.value,
+                  });
+                  setSettings(next);
+                }}
+                placeholder="I:\Downloads\Involvex-Sync"
+                disabled={!settings.folderSyncEnabled}
+              />
+            </label>
             <p className="muted small">
-              Change the save folder under Settings. Phone must allow storage /
-              rebuild after cleartext plugins.
+              Status: {folderSyncStatus}
+              {folderSyncLast ? ` · last ${folderSyncLast}` : ""}
+            </p>
+            <div className="row">
+              <button
+                type="button"
+                className="ghost"
+                disabled={!settings.folderSyncEnabled}
+                onClick={() => void scanFolderSync()}
+              >
+                Scan now
+              </button>
+            </div>
+            <p className="muted small">
+              One-way PC → phone. Phone must have a save folder picked (SAF).
+              Subfolders are flattened as <code>sub__file.ext</code>. Max{" "}
+              {Math.floor(MAX_CHUNKED_FILE_BYTES / (1024 * 1024))} MiB per file.
             </p>
           </article>
         ) : null}
@@ -1365,8 +1632,34 @@ export default function App() {
                   placeholder={defaultIncomingDir || "Downloads/involvex-Sync"}
                 />
               </label>
+              <label className="check">
+                <input
+                  type="checkbox"
+                  checked={settings.folderSyncEnabled}
+                  onChange={(e) => {
+                    const next = saveSettings({
+                      folderSyncEnabled: e.target.checked,
+                    });
+                    setSettings(next);
+                  }}
+                />
+                Folder sync (PC → phone)
+              </label>
+              <label className="stack">
+                Outbound sync folder
+                <input
+                  value={settings.folderSyncDir}
+                  onChange={(e) => {
+                    const next = saveSettings({
+                      folderSyncDir: e.target.value,
+                    });
+                    setSettings(next);
+                  }}
+                  placeholder="I:\Downloads\Involvex-Sync"
+                />
+              </label>
               <p className="muted small">
-                Leave blank for default:{" "}
+                Leave incoming blank for default:{" "}
                 {defaultIncomingDir || "Downloads/involvex-Sync"}. Close /
                 minimize hides to the tray. Pair requests always notify.
               </p>

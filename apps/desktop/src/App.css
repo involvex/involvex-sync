@@ -158,6 +158,18 @@ body {
   font-size: 1.05rem;
 }
 
+.card h3 {
+  margin: 0.85rem 0 0.55rem;
+  font-size: 0.95rem;
+  font-weight: 600;
+}
+
+.divider {
+  border: none;
+  border-top: 1px solid rgba(120, 150, 200, 0.14);
+  margin: 1rem 0;
+}
+
 .muted {
   color: #9db0cc;
 }
