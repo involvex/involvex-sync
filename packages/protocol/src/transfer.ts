@@ -1,6 +1,11 @@
 import { sha256 } from "@noble/hashes/sha2.js";
 import { bytesToHex } from "./hex";
-import { FILE_CHUNK_BYTES, MAX_CHUNKED_FILE_BYTES } from "./types";
+import {
+  FILE_CHUNK_BYTES,
+  MAX_CHUNKED_FILE_BYTES,
+  MAX_CLIPBOARD_IMAGE_BYTES,
+  type FileTransferPurpose,
+} from "./types";
 
 export type ChunkPlan = {
   transferId: string;
@@ -10,6 +15,7 @@ export type ChunkPlan = {
   totalChunks: number;
   chunks: string[]; // base64
   sha256: string;
+  purpose?: FileTransferPurpose;
 };
 
 export type ChunkedSendMeta = {
@@ -18,6 +24,8 @@ export type ChunkedSendMeta = {
   mimeType: string;
   size: number;
   totalChunks: number;
+  purpose?: FileTransferPurpose;
+  hash?: string;
 };
 
 /**
@@ -46,6 +54,14 @@ export function chunkCountForSize(size: number): number {
 export function assertSendableSize(size: number): void {
   if (size > MAX_CHUNKED_FILE_BYTES) {
     throw new Error(`file too large (${size} > ${MAX_CHUNKED_FILE_BYTES})`);
+  }
+}
+
+export function assertClipboardImageSize(size: number): void {
+  if (size > MAX_CLIPBOARD_IMAGE_BYTES) {
+    throw new Error(
+      `clipboard image too large (${size} > ${MAX_CLIPBOARD_IMAGE_BYTES})`,
+    );
   }
 }
 
@@ -135,6 +151,8 @@ export class ChunkAssembler {
   readonly mimeType: string;
   readonly size: number;
   readonly totalChunks: number;
+  readonly purpose: FileTransferPurpose;
+  readonly hash?: string;
   private parts: (Uint8Array | null)[];
   private received = 0;
 
@@ -144,8 +162,15 @@ export class ChunkAssembler {
     mimeType: string;
     size: number;
     totalChunks: number;
+    purpose?: FileTransferPurpose;
+    hash?: string;
   }) {
-    if (offer.size > MAX_CHUNKED_FILE_BYTES) {
+    const purpose = offer.purpose === "clipboard" ? "clipboard" : "file";
+    if (purpose === "clipboard") {
+      if (offer.size > MAX_CLIPBOARD_IMAGE_BYTES) {
+        throw new Error("clipboard offer exceeds size cap");
+      }
+    } else if (offer.size > MAX_CHUNKED_FILE_BYTES) {
       throw new Error("offer exceeds size cap");
     }
     this.transferId = offer.transferId;
@@ -153,6 +178,8 @@ export class ChunkAssembler {
     this.mimeType = offer.mimeType;
     this.size = offer.size;
     this.totalChunks = offer.totalChunks;
+    this.purpose = purpose;
+    this.hash = offer.hash;
     this.parts = Array.from({ length: offer.totalChunks }, () => null);
   }
 

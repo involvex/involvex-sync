@@ -75,6 +75,7 @@
       "./modules/invx-notify/app.plugin.js",
       "./modules/invx-ime/app.plugin.js",
       "./modules/invx-a11y/app.plugin.js",
+      "./modules/invx-clipboard/app.plugin.js",
       "./plugins/withCleartextTraffic.js",
       [
         "expo-camera",

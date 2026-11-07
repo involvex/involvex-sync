@@ -69,6 +69,11 @@ export function hashText(text: string): string {
   return bytesToHex(sha256(utf8.encode(text)));
 }
 
+/** sha256 hex of raw bytes (clipboard images, file digests). */
+export function hashBytes(bytes: Uint8Array): string {
+  return bytesToHex(sha256(bytes));
+}
+
 export function sharedSecret(
   ourPrivateX25519Hex: string,
   theirPublicX25519Hex: string,

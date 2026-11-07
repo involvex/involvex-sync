@@ -36,6 +36,23 @@ object InvxImeBridge {
     onActiveChanged?.invoke(active)
   }
 
+  /** Soft-notify clipboard module when IME focus changes (same process). */
+  fun notifyClipboardImeActive(context: Context, active: Boolean) {
+    try {
+      val clazz = Class.forName("app.involvex.sync.clipboard.InvxClipboardBridge")
+      val instance = clazz.getField("INSTANCE").get(null)
+      val method =
+        clazz.getMethod(
+          "setImeActive",
+          Context::class.java,
+          java.lang.Boolean.TYPE,
+        )
+      method.invoke(instance, context, active)
+    } catch (_: Exception) {
+      /* clipboard module optional at compile time */
+    }
+  }
+
   fun commitText(text: String): Boolean {
     val ic = inputConnection ?: return false
     ic.commitText(text, 1)

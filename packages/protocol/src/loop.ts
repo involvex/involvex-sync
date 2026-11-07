@@ -16,6 +16,7 @@ type Entry = {
 /**
  * Prevents clipboard echo loops: A → B → A.
  * Remember (hash, source) for a short window after applying a remote update.
+ * Hash may be sha256 of text (via hashText) or of image bytes.
  */
 export class LoopGuard {
   private readonly windowMs: number;
@@ -27,10 +28,11 @@ export class LoopGuard {
     this.maxEntries = options.maxEntries ?? 64;
   }
 
-  remember(text: string, sourceDeviceId: string, now = Date.now()): void {
+  rememberHash(hash: string, sourceDeviceId: string, now = Date.now()): void {
+    if (!hash) return;
     this.prune(now);
     this.entries.push({
-      hash: hashText(text),
+      hash,
       sourceDeviceId,
       expiresAt: now + this.windowMs,
     });
@@ -39,20 +41,32 @@ export class LoopGuard {
     }
   }
 
+  remember(text: string, sourceDeviceId: string, now = Date.now()): void {
+    this.rememberHash(hashText(text), sourceDeviceId, now);
+  }
+
   /**
    * Returns true when a local clipboard change matches a recent remote apply
    * and should not be rebroadcast.
    */
+  shouldSkipOutboundHash(
+    hash: string,
+    localDeviceId: string,
+    now = Date.now(),
+  ): boolean {
+    if (!hash) return false;
+    this.prune(now);
+    return this.entries.some(
+      (e) => e.hash === hash && e.sourceDeviceId !== localDeviceId,
+    );
+  }
+
   shouldSkipOutbound(
     text: string,
     localDeviceId: string,
     now = Date.now(),
   ): boolean {
-    this.prune(now);
-    const hash = hashText(text);
-    return this.entries.some(
-      (e) => e.hash === hash && e.sourceDeviceId !== localDeviceId,
-    );
+    return this.shouldSkipOutboundHash(hashText(text), localDeviceId, now);
   }
 
   clear(): void {

@@ -177,6 +177,8 @@ export function fileTransferBody(
     mimeType: string;
     dataBase64: string;
     size: number;
+    purpose?: "file" | "clipboard";
+    hash?: string;
   },
   to?: string,
 ): MessageBody {
@@ -188,6 +190,8 @@ export function fileTransferBody(
       mimeType: file.mimeType,
       dataBase64: file.dataBase64,
       size: file.size,
+      ...(file.purpose ? { purpose: file.purpose } : {}),
+      ...(file.hash ? { hash: file.hash } : {}),
     },
     to,
   );
@@ -277,10 +281,22 @@ export function fileOfferBody(
     mimeType: string;
     size: number;
     totalChunks: number;
+    purpose?: "file" | "clipboard";
+    hash?: string;
   },
   to?: string,
 ): MessageBody {
-  return createMessageBody(from, { type: "file_offer", ...offer }, to);
+  const payload: MessagePayload = {
+    type: "file_offer",
+    transferId: offer.transferId,
+    name: offer.name,
+    mimeType: offer.mimeType,
+    size: offer.size,
+    totalChunks: offer.totalChunks,
+  };
+  if (offer.purpose) payload.purpose = offer.purpose;
+  if (offer.hash) payload.hash = offer.hash;
+  return createMessageBody(from, payload, to);
 }
 
 export function fileChunkBody(

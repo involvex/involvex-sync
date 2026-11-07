@@ -31,10 +31,12 @@ class InvxImeService : InputMethodService() {
     super.onStartInputView(info, restarting)
     InvxImeBridge.inputConnection = currentInputConnection
     InvxImeBridge.setActive(true)
+    InvxImeBridge.notifyClipboardImeActive(this, true)
   }
 
   override fun onFinishInputView(finishingInput: Boolean) {
     InvxImeBridge.setActive(false)
+    InvxImeBridge.notifyClipboardImeActive(this, false)
     InvxImeBridge.inputConnection = null
     super.onFinishInputView(finishingInput)
   }
@@ -47,6 +49,7 @@ class InvxImeService : InputMethodService() {
   override fun onFinishInput() {
     InvxImeBridge.inputConnection = null
     InvxImeBridge.setActive(false)
+    InvxImeBridge.notifyClipboardImeActive(this, false)
     super.onFinishInput()
   }
 }

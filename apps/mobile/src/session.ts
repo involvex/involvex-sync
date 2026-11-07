@@ -9,6 +9,7 @@ import {
   type RemoteShell,
   FILE_CHUNK_BYTES,
   ChunkAssembler,
+  assertClipboardImageSize,
   assertSendableSize,
   buildPairRequest,
   bytesToHex,
@@ -22,6 +23,7 @@ import {
   fileOfferBody,
   fileTransferBody,
   fromBase64,
+  hashBytes,
   iterateFileChunks,
   keyboardStatusBody,
   notificationMirrorBody,
@@ -57,6 +59,16 @@ export type RemoteCommandResult = {
 export type SessionHandlers = {
   onShareUrl: (url: string, from: string) => void | Promise<void>;
   onClipboard: (text: string, from: string) => void | Promise<void>;
+  onClipboardImage?: (
+    file: {
+      name: string;
+      mimeType: string;
+      dataBase64: string;
+      size: number;
+      hash: string;
+    },
+    from: string,
+  ) => void | Promise<void>;
   onTermuxOpenUrl?: (url: string, from: string) => void | Promise<void>;
   onTermuxClipboardSet?: (text: string, from: string) => void | Promise<void>;
   onFileTransfer?: (
@@ -256,6 +268,22 @@ export class MobileSession {
         break;
       }
       case "file_transfer": {
+        if (payload.purpose === "clipboard") {
+          const hash =
+            payload.hash ?? hashBytes(fromBase64(payload.dataBase64));
+          this.loop.rememberHash(hash, body.from);
+          await this.handlers.onClipboardImage?.(
+            {
+              name: payload.name,
+              mimeType: payload.mimeType,
+              dataBase64: payload.dataBase64,
+              size: payload.size,
+              hash,
+            },
+            body.from,
+          );
+          break;
+        }
         await this.handlers.onFileTransfer?.(
           {
             name: payload.name,
@@ -271,7 +299,7 @@ export class MobileSession {
         try {
           this.assemblers.set(payload.transferId, new ChunkAssembler(payload));
           this.handlers.onLog(
-            `file offer ${payload.name} (${payload.size} B, ${payload.totalChunks} chunks)`,
+            `file offer ${payload.name} (${payload.size} B, ${payload.totalChunks} chunks${payload.purpose === "clipboard" ? ", clipboard" : ""})`,
           );
         } catch (e) {
           this.handlers.onLog(`file offer rejected: ${String(e)}`);
@@ -302,6 +330,21 @@ export class MobileSession {
         if (!asm) break;
         try {
           const data = asm.finish(payload.sha256);
+          if (asm.purpose === "clipboard") {
+            this.loop.rememberHash(payload.sha256, body.from);
+            await this.handlers.onClipboardImage?.(
+              {
+                name: asm.name,
+                mimeType: asm.mimeType,
+                dataBase64: toBase64(data),
+                size: asm.size,
+                hash: payload.sha256,
+              },
+              body.from,
+            );
+            this.handlers.onLog(`clipboard image complete ${asm.name}`);
+            break;
+          }
           await this.handlers.onFileTransfer?.(
             {
               name: asm.name,
@@ -395,18 +438,52 @@ export class MobileSession {
     );
   }
 
+  sendClipboardImage(file: {
+    name: string;
+    mimeType: string;
+    data?: Uint8Array;
+    dataBase64?: string;
+  }): void {
+    if (!this.peer) throw new Error("not connected");
+    const data =
+      file.data ?? (file.dataBase64 ? fromBase64(file.dataBase64) : null);
+    if (!data) throw new Error("missing image bytes");
+    assertClipboardImageSize(data.byteLength);
+    const hash = hashBytes(data);
+    if (this.loop.shouldSkipOutboundHash(hash, this.local.deviceId)) {
+      this.handlers.onLog("skip clipboard image echo");
+      return;
+    }
+    this.sendFile({
+      name: file.name,
+      mimeType: file.mimeType,
+      data,
+      purpose: "clipboard",
+      hash,
+    });
+  }
+
   sendFile(file: {
     name: string;
     mimeType: string;
     data?: Uint8Array;
     dataBase64?: string;
     size?: number;
+    purpose?: "file" | "clipboard";
+    hash?: string;
   }): void {
     if (!this.peer) throw new Error("not connected");
     const data =
       file.data ?? (file.dataBase64 ? fromBase64(file.dataBase64) : null);
     if (!data) throw new Error("missing file bytes");
-    assertSendableSize(data.byteLength);
+    const purpose = file.purpose === "clipboard" ? "clipboard" : "file";
+    if (purpose === "clipboard") {
+      assertClipboardImageSize(data.byteLength);
+    } else {
+      assertSendableSize(data.byteLength);
+    }
+    const hash =
+      file.hash ?? (purpose === "clipboard" ? hashBytes(data) : undefined);
     if (data.byteLength <= FILE_CHUNK_BYTES) {
       this.sendFrame(
         fileTransferBody(
@@ -416,11 +493,15 @@ export class MobileSession {
             mimeType: file.mimeType,
             dataBase64: toBase64(data),
             size: data.byteLength,
+            purpose: purpose === "clipboard" ? "clipboard" : undefined,
+            hash,
           },
           this.peer.deviceId,
         ),
       );
-      this.handlers.onLog(`sent file ${file.name} (${data.byteLength} B)`);
+      this.handlers.onLog(
+        `sent ${purpose === "clipboard" ? "clipboard image" : "file"} ${file.name} (${data.byteLength} B)`,
+      );
       return;
     }
     const transferId = bytesToHex(randomBytes(8));
@@ -434,6 +515,8 @@ export class MobileSession {
           mimeType: file.mimeType,
           size: data.byteLength,
           totalChunks,
+          purpose: purpose === "clipboard" ? "clipboard" : undefined,
+          hash,
         },
         this.peer.deviceId,
       ),
@@ -462,7 +545,7 @@ export class MobileSession {
       ),
     );
     this.handlers.onLog(
-      `sent file ${file.name} (${data.byteLength} B, ${totalChunks} chunks)`,
+      `sent ${purpose === "clipboard" ? "clipboard image" : "file"} ${file.name} (${data.byteLength} B, ${totalChunks} chunks)`,
     );
   }
 

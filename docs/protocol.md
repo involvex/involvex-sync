@@ -24,6 +24,12 @@ Payload types: `share_url`, `clipboard_update`, `ping`, `pong`, `pair_ack`,
 Chunked files: soft cap 100 MiB, ~64 KiB decoded chunks, `sha256` on
 `file_done`. Legacy `file_transfer` remains for ≤2 MiB.
 
+Clipboard images reuse `file_transfer` / `file_offer` with
+`purpose: "clipboard"` (optional `hash` = sha256 of bytes). Prefer ≤1 MiB
+after compress; hard abort above 2 MiB. Receivers apply to the OS clipboard
+instead of saving to the incoming-files folder. Text stays on
+`clipboard_update`.
+
 Remote commands (`remote_command` / `remote_command_result`): `shell` is
 `pwsh` (phone→PC), `termux` (PC→phone via InVx Termux), or `adb` (local on
 PC only). Both sides require an explicit allow setting. Cap 2000 chars.

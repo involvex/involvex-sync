@@ -3,12 +3,13 @@ import { bytesToHex } from "./hex";
 import { sha256 } from "@noble/hashes/sha2.js";
 import {
   ChunkAssembler,
+  assertClipboardImageSize,
   chunkCountForSize,
   iterateFileChunks,
   planChunkedTransfer,
   toBase64,
 } from "./transfer";
-import { FILE_CHUNK_BYTES } from "./types";
+import { FILE_CHUNK_BYTES, MAX_CLIPBOARD_IMAGE_BYTES } from "./types";
 
 describe("chunked transfer", () => {
   test("roundtrip plan + assemble", () => {
@@ -59,5 +60,32 @@ describe("chunked transfer", () => {
     }
     expect(step.value).toBe(plan.sha256);
     expect(asm.finish(step.value)).toEqual(bytes);
+  });
+
+  test("clipboard purpose stores purpose and rejects oversize", () => {
+    const bytes = new Uint8Array(100);
+    const plan = planChunkedTransfer("c1", "clip.png", "image/png", bytes);
+    const asm = new ChunkAssembler({
+      ...plan,
+      purpose: "clipboard",
+      hash: plan.sha256,
+    });
+    expect(asm.purpose).toBe("clipboard");
+    expect(asm.hash).toBe(plan.sha256);
+
+    expect(() =>
+      assertClipboardImageSize(MAX_CLIPBOARD_IMAGE_BYTES + 1),
+    ).toThrow();
+    expect(
+      () =>
+        new ChunkAssembler({
+          transferId: "c2",
+          name: "big.png",
+          mimeType: "image/png",
+          size: MAX_CLIPBOARD_IMAGE_BYTES + 1,
+          totalChunks: 1,
+          purpose: "clipboard",
+        }),
+    ).toThrow(/clipboard offer/);
   });
 });

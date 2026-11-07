@@ -31,9 +31,20 @@
 2. **MyFritz** — same encrypted frames to a forwarded host/port (optional).
 3. **Cloudflare relay** — both sides dial `wss://sync.involvex.workers.dev/ws` when away.
 
+## Auto clipboard sync
+
+- Opt-in on **both** sides (default off): auto text + optional images.
+- Desktop watches the OS clipboard while Live and pushes changes.
+- Phone pushes when the app is foreground **or** Sync Keyboard IME is
+  selected (IME may read clipboard on Android 10+). Share / Send remain.
+- Images travel as chunked `file_*` with `purpose: "clipboard"` (≤2 MiB).
+- Echo suppression uses `LoopGuard` on text or image content hash.
+- Not Microsoft Phone Link — same E2E stack as the rest of Sync.
+
 ## Android constraints
 
-- Background clipboard read is blocked (Android 10+). Share sheet is the reliable path.
+- Background clipboard read is blocked (Android 10+). Share sheet is the
+  reliable path; auto sync needs foreground or Sync Keyboard IME.
 - Opening a browser from the background uses a high-priority notification; tap runs `ACTION_VIEW`.
 - Keepalive uses a `dataSync` foreground service so the WebSocket can stay up.
 - Cleartext `ws://` LAN is allowed via config plugin `plugins/withCleartextTraffic.js`

@@ -8,6 +8,9 @@ export type ClipboardHistoryEntry = {
   text: string;
   ts: number;
   direction: "in" | "out" | "local";
+  kind?: "text" | "image";
+  /** Local file URI for image entries (optional). */
+  imageUri?: string;
 };
 
 export async function loadClipboardHistory(): Promise<ClipboardHistoryEntry[]> {
@@ -24,24 +27,32 @@ export async function loadClipboardHistory(): Promise<ClipboardHistoryEntry[]> {
 export async function appendClipboardHistory(
   text: string,
   direction: ClipboardHistoryEntry["direction"],
+  opts?: { kind?: "text" | "image"; imageUri?: string },
 ): Promise<ClipboardHistoryEntry[]> {
+  const kind = opts?.kind ?? "text";
   const trimmed = text.trim();
-  if (!trimmed) return loadClipboardHistory();
+  if (kind === "text" && !trimmed) return loadClipboardHistory();
 
   const prev = await loadClipboardHistory();
-  if (prev[0]?.text === trimmed) {
+  if (prev[0]?.text === trimmed && (prev[0]?.kind ?? "text") === kind) {
     return prev;
   }
 
   // Keep entries short enough for SecureStore (~2KB limit on some devices).
   const storedText =
-    trimmed.length > 800 ? `${trimmed.slice(0, 800)}…` : trimmed;
+    kind === "image"
+      ? trimmed || "[Image]"
+      : trimmed.length > 800
+        ? `${trimmed.slice(0, 800)}…`
+        : trimmed;
   const next: ClipboardHistoryEntry[] = [
     {
       id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
       text: storedText,
       ts: Date.now(),
       direction,
+      kind,
+      imageUri: opts?.imageUri,
     },
     ...prev,
   ].slice(0, MAX);

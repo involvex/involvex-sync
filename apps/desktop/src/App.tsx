@@ -16,6 +16,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { enable as enableAutostart } from "@tauri-apps/plugin-autostart";
 import {
+  readImage,
   readText,
   writeImage,
   writeText,
@@ -34,6 +35,10 @@ import {
   useState,
   type ChangeEvent,
 } from "react";
+import {
+  compressClipboardImageBytes,
+  encodeRgbaClipboardImage,
+} from "./services/clipboardImage";
 import {
   appendClipboardHistory,
   clearClipboardHistory,
@@ -210,8 +215,12 @@ export default function App() {
   }, []);
 
   const pushHistory = useCallback(
-    (text: string, direction: ClipboardHistoryEntry["direction"]) => {
-      setHistory(appendClipboardHistory(text, direction));
+    (
+      text: string,
+      direction: ClipboardHistoryEntry["direction"],
+      opts?: { kind?: "text" | "image"; imagePath?: string },
+    ) => {
+      setHistory(appendClipboardHistory(text, direction, opts));
     },
     [],
   );
@@ -250,6 +259,20 @@ export default function App() {
         await writeText(text);
         pushHistory(text, "in");
         log("clipboard updated from peer");
+      },
+      onClipboardImage: async (file) => {
+        try {
+          const path = await invoke<string>("save_incoming_file", {
+            name: file.name || `clipboard-${Date.now()}.jpg`,
+            dataBase64: file.dataBase64,
+            directory: null,
+          });
+          await writeImage(path);
+          pushHistory("[Image]", "in", { kind: "image", imagePath: path });
+          log("clipboard image updated from peer");
+        } catch (e) {
+          log(`clipboard image apply failed: ${String(e)}`);
+        }
       },
       onFileTransfer: async (file) => {
         try {
@@ -843,6 +866,108 @@ export default function App() {
     return () => unlisten?.();
   }, []);
 
+  // Auto clipboard sync: poll OS clipboard while Live + setting on.
+  useEffect(() => {
+    if (!settings.autoClipboardSync) return;
+    let lastText = "";
+    let lastImageKey = "";
+    let seeded = false;
+    let busy = false;
+    let stopped = false;
+
+    const snapshotKeys = async (): Promise<void> => {
+      try {
+        lastText = (await readText()) ?? "";
+      } catch {
+        lastText = "";
+      }
+      if (settingsRef.current.autoClipboardImages) {
+        try {
+          const img = await readImage();
+          const size = await img.size();
+          const rgba = await img.rgba();
+          lastImageKey = `${size.width}x${size.height}:${rgba.byteLength}:${rgba[0]}:${rgba[rgba.length - 1]}`;
+        } catch {
+          lastImageKey = "";
+        }
+      }
+      seeded = true;
+    };
+
+    const tick = async () => {
+      if (stopped || busy) return;
+      if (!liveRef.current || !sessionRef.current) return;
+      const cfg = settingsRef.current;
+      if (!cfg.autoClipboardSync) return;
+      if (!seeded) {
+        await snapshotKeys();
+        return;
+      }
+      busy = true;
+      try {
+        let text = "";
+        try {
+          text = (await readText()) ?? "";
+        } catch {
+          text = "";
+        }
+        if (text && text !== lastText) {
+          lastText = text;
+          lastImageKey = "";
+          const url = parseAllowedUrl(text);
+          if (url) {
+            await sessionRef.current.sendShareUrl(url);
+            pushHistory(url, "out");
+            log("auto clipboard url → phone");
+          } else {
+            await sessionRef.current.sendClipboard(text);
+            pushHistory(text, "out");
+            log("auto clipboard text → phone");
+          }
+          return;
+        }
+        if (!cfg.autoClipboardImages) return;
+        try {
+          const img = await readImage();
+          const size = await img.size();
+          const rgba = await img.rgba();
+          const key = `${size.width}x${size.height}:${rgba.byteLength}:${rgba[0]}:${rgba[rgba.length - 1]}`;
+          if (key === lastImageKey) return;
+          lastImageKey = key;
+          lastText = "";
+          const encoded = await encodeRgbaClipboardImage(
+            rgba,
+            size.width,
+            size.height,
+          );
+          await sessionRef.current.sendClipboardImage(encoded);
+          pushHistory("[Image]", "out", { kind: "image" });
+          log("auto clipboard image → phone");
+        } catch {
+          /* no image on clipboard */
+        }
+      } catch (e) {
+        log(`auto clipboard: ${String(e)}`);
+      } finally {
+        busy = false;
+      }
+    };
+
+    void snapshotKeys();
+    const id = window.setInterval(() => {
+      void tick();
+    }, 450);
+    return () => {
+      stopped = true;
+      window.clearInterval(id);
+    };
+  }, [
+    settings.autoClipboardSync,
+    settings.autoClipboardImages,
+    log,
+    pushHistory,
+  ]);
+
   async function onUnpair(): Promise<void> {
     await clearPeer();
     session?.clearPeer();
@@ -962,6 +1087,25 @@ export default function App() {
       return;
     }
     try {
+      if (entry.kind === "image" && entry.imagePath) {
+        const dataBase64 = await invoke<string>("read_file_base64", {
+          path: entry.imagePath,
+        });
+        const encoded = await compressClipboardImageBytes(
+          fromBase64(dataBase64),
+          entry.imagePath.toLowerCase().endsWith(".png")
+            ? "image/png"
+            : "image/jpeg",
+        );
+        await session.sendClipboardImage(encoded);
+        pushHistory("[Image]", "out", {
+          kind: "image",
+          imagePath: entry.imagePath,
+        });
+        log("resent clipboard image");
+        toast("Image resent", "ok");
+        return;
+      }
       const url = parseAllowedUrl(entry.text);
       if (url) await session.sendShareUrl(url);
       else await session.sendClipboard(entry.text);
@@ -1080,6 +1224,28 @@ export default function App() {
       await writeImage(path);
       log(`screenshot → clipboard (${path})`);
       toast("Screenshot copied to clipboard", "ok");
+      const cfg = settingsRef.current;
+      if (
+        liveRef.current &&
+        sessionRef.current &&
+        cfg.autoClipboardSync &&
+        cfg.autoClipboardImages
+      ) {
+        try {
+          const dataBase64 = await invoke<string>("read_file_base64", {
+            path,
+          });
+          const encoded = await compressClipboardImageBytes(
+            fromBase64(dataBase64),
+            "image/png",
+          );
+          await sessionRef.current.sendClipboardImage(encoded);
+          pushHistory("[Image]", "out", { kind: "image", imagePath: path });
+          log("screenshot → phone clipboard");
+        } catch (e) {
+          log(`screenshot sync: ${String(e)}`);
+        }
+      }
     } catch (e) {
       const msg = String(e);
       log(`screenshot: ${msg}`);
@@ -1553,10 +1719,17 @@ export default function App() {
                     <button
                       type="button"
                       className="linkish"
-                      onClick={() => void writeText(entry.text)}
+                      onClick={() => {
+                        if (entry.kind === "image" && entry.imagePath) {
+                          void writeImage(entry.imagePath);
+                        } else {
+                          void writeText(entry.text);
+                        }
+                      }}
                       title="Copy"
                     >
-                      [{entry.direction}] {entry.text.slice(0, 120)}
+                      [{entry.direction}]{entry.kind === "image" ? " 🖼 " : " "}
+                      {entry.text.slice(0, 120)}
                       {entry.text.length > 120 ? "…" : ""}
                     </button>
                     <button
@@ -1610,6 +1783,46 @@ export default function App() {
                   </button>
                 ))}
               </div>
+              <label className="check">
+                <input
+                  type="checkbox"
+                  checked={settings.autoClipboardSync}
+                  onChange={(e) => {
+                    const next = saveSettings({
+                      autoClipboardSync: e.target.checked,
+                    });
+                    setSettings(next);
+                    log(
+                      next.autoClipboardSync
+                        ? "auto clipboard sync on"
+                        : "auto clipboard sync off",
+                    );
+                  }}
+                />
+                Auto sync clipboard
+              </label>
+              <label className="check">
+                <input
+                  type="checkbox"
+                  checked={settings.autoClipboardImages}
+                  disabled={!settings.autoClipboardSync}
+                  onChange={(e) => {
+                    const next = saveSettings({
+                      autoClipboardImages: e.target.checked,
+                    });
+                    setSettings(next);
+                    log(
+                      next.autoClipboardImages
+                        ? "clipboard images on"
+                        : "clipboard images off",
+                    );
+                  }}
+                />
+                Include images / screenshots
+              </label>
+              <p className="muted small">
+                Phone must also enable auto sync. Images stay under 2 MiB.
+              </p>
               <label className="check">
                 <input
                   type="checkbox"

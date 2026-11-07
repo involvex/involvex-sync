@@ -161,6 +161,24 @@ fn save_incoming_file(
 }
 
 #[tauri::command]
+fn read_file_base64(path: String) -> Result<String, String> {
+    use base64::Engine;
+    use std::fs;
+    use std::path::PathBuf;
+
+    let p = PathBuf::from(path.trim());
+    if !p.is_file() {
+        return Err("file not found".into());
+    }
+    let meta = fs::metadata(&p).map_err(|e| e.to_string())?;
+    if meta.len() > 12 * 1024 * 1024 {
+        return Err("file too large".into());
+    }
+    let bytes = fs::read(&p).map_err(|e| e.to_string())?;
+    Ok(base64::engine::general_purpose::STANDARD.encode(bytes))
+}
+
+#[tauri::command]
 fn run_pwsh(command: String, timeout_ms: Option<u64>) -> Result<shell::CommandResult, String> {
     shell::run_pwsh(&command, timeout_ms.unwrap_or(30_000))
 }
@@ -328,6 +346,7 @@ pub fn run() {
             start_mdns,
             ensure_firewall_rule,
             save_incoming_file,
+            read_file_base64,
             default_incoming_dir,
             run_pwsh,
             run_adb_shell,

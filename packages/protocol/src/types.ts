@@ -43,8 +43,17 @@ export const MAX_FILE_TRANSFER_BYTES = 2 * 1024 * 1024;
 /** Soft cap for chunked transfers (100 MiB). */
 export const MAX_CHUNKED_FILE_BYTES = 100 * 1024 * 1024;
 
+/** Preferred max size for clipboard images after compress (Phone Link–like). */
+export const PREFERRED_CLIPBOARD_IMAGE_BYTES = 1 * 1024 * 1024;
+
+/** Hard cap for clipboard images after compress. */
+export const MAX_CLIPBOARD_IMAGE_BYTES = 2 * 1024 * 1024;
+
 /** Decoded chunk size for file_chunk payloads (~64 KiB). */
 export const FILE_CHUNK_BYTES = 64 * 1024;
+
+/** Why a file_* payload was sent. Default / omit = normal file save. */
+export type FileTransferPurpose = "file" | "clipboard";
 
 /** Max characters per keyboard_text frame. */
 export const MAX_KEYBOARD_TEXT_CHARS = 2000;
@@ -116,6 +125,10 @@ export type FileTransferPayload = {
   /** Base64 file bytes (≤ MAX_FILE_TRANSFER_BYTES). */
   dataBase64: string;
   size: number;
+  /** Omit or `"file"` = save to disk. `"clipboard"` = apply as image clipboard. */
+  purpose?: FileTransferPurpose;
+  /** sha256 hex of decoded bytes (required when purpose is clipboard). */
+  hash?: string;
 };
 
 export type FileOfferPayload = {
@@ -125,6 +138,10 @@ export type FileOfferPayload = {
   mimeType: string;
   size: number;
   totalChunks: number;
+  /** Omit or `"file"` = save to disk. `"clipboard"` = apply as image clipboard. */
+  purpose?: FileTransferPurpose;
+  /** sha256 hex of full decoded file (for clipboard loop detection). */
+  hash?: string;
 };
 
 export type FileChunkPayload = {

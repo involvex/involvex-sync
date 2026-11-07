@@ -13,6 +13,10 @@ export type MobileAppSettings = {
   incomingFilesLabel: string;
   /** Allow PC to run Termux commands on this phone. Default false. */
   allowRemoteTermux: boolean;
+  /** Auto-push clipboard changes while foreground or Sync Keyboard IME. */
+  autoClipboardSync: boolean;
+  /** Include images in auto clipboard sync. */
+  autoClipboardImages: boolean;
   /** Appearance preference. Default system. */
   theme: ThemePreference;
 };
@@ -21,6 +25,8 @@ const defaults: MobileAppSettings = {
   incomingFilesUri: "",
   incomingFilesLabel: "",
   allowRemoteTermux: false,
+  autoClipboardSync: false,
+  autoClipboardImages: true,
   theme: "system",
 };
 
@@ -52,6 +58,14 @@ export async function loadAppSettings(): Promise<MobileAppSettings> {
         typeof parsed.allowRemoteTermux === "boolean"
           ? parsed.allowRemoteTermux
           : defaults.allowRemoteTermux,
+      autoClipboardSync:
+        typeof parsed.autoClipboardSync === "boolean"
+          ? parsed.autoClipboardSync
+          : defaults.autoClipboardSync,
+      autoClipboardImages:
+        typeof parsed.autoClipboardImages === "boolean"
+          ? parsed.autoClipboardImages
+          : defaults.autoClipboardImages,
       theme: parseTheme(parsed.theme),
     };
   } catch {
@@ -76,6 +90,14 @@ export async function saveAppSettings(
       typeof patch.allowRemoteTermux === "boolean"
         ? patch.allowRemoteTermux
         : current.allowRemoteTermux,
+    autoClipboardSync:
+      typeof patch.autoClipboardSync === "boolean"
+        ? patch.autoClipboardSync
+        : current.autoClipboardSync,
+    autoClipboardImages:
+      typeof patch.autoClipboardImages === "boolean"
+        ? patch.autoClipboardImages
+        : current.autoClipboardImages,
     theme: patch.theme !== undefined ? parseTheme(patch.theme) : current.theme,
   };
   await SecureStore.setItemAsync(KEY, JSON.stringify(next));

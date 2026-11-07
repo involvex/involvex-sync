@@ -15,6 +15,10 @@ export type DesktopSettings = {
   folderSyncEnabled: boolean;
   /** PC folder watched for outbound sync. */
   folderSyncDir: string;
+  /** Auto-push OS clipboard changes to the phone while Live. Default false. */
+  autoClipboardSync: boolean;
+  /** Include images/screenshots in auto clipboard sync. Default true when auto on. */
+  autoClipboardImages: boolean;
   /** Appearance preference. Default system. */
   theme: ThemePreference;
 };
@@ -26,6 +30,8 @@ const defaults: DesktopSettings = {
   allowRemotePwsh: false,
   folderSyncEnabled: false,
   folderSyncDir: "I:\\Downloads\\Involvex-Sync",
+  autoClipboardSync: false,
+  autoClipboardImages: true,
   theme: "system",
 };
 

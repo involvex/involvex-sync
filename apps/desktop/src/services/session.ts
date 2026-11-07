@@ -9,6 +9,7 @@ import {
   type RemoteShell,
   FILE_CHUNK_BYTES,
   ChunkAssembler,
+  assertClipboardImageSize,
   assertSendableSize,
   buildPairAccept,
   buildPairReject,
@@ -23,6 +24,8 @@ import {
   fileOfferBody,
   fileTransferBody,
   findPhoneBody,
+  fromBase64,
+  hashBytes,
   iterateFileChunks,
   keyboardKeyBody,
   keyboardTextBody,
@@ -58,6 +61,16 @@ export type RemoteCommandResult = {
 export type SessionHandlers = {
   onShareUrl: (url: string, from: string) => void | Promise<void>;
   onClipboard: (text: string, from: string) => void | Promise<void>;
+  onClipboardImage?: (
+    file: {
+      name: string;
+      mimeType: string;
+      dataBase64: string;
+      size: number;
+      hash: string;
+    },
+    from: string,
+  ) => void | Promise<void>;
   onFileTransfer?: (
     file: {
       name: string;
@@ -194,6 +207,22 @@ export class SyncSession {
         break;
       }
       case "file_transfer": {
+        if (payload.purpose === "clipboard") {
+          const hash =
+            payload.hash ?? hashBytes(fromBase64(payload.dataBase64));
+          this.loop.rememberHash(hash, body.from);
+          await this.handlers.onClipboardImage?.(
+            {
+              name: payload.name,
+              mimeType: payload.mimeType,
+              dataBase64: payload.dataBase64,
+              size: payload.size,
+              hash,
+            },
+            body.from,
+          );
+          break;
+        }
         await this.handlers.onFileTransfer?.(
           {
             name: payload.name,
@@ -209,7 +238,7 @@ export class SyncSession {
         try {
           this.assemblers.set(payload.transferId, new ChunkAssembler(payload));
           this.handlers.onLog(
-            `file offer ${payload.name} (${payload.size} B, ${payload.totalChunks} chunks)`,
+            `file offer ${payload.name} (${payload.size} B, ${payload.totalChunks} chunks${payload.purpose === "clipboard" ? ", clipboard" : ""})`,
           );
         } catch (e) {
           this.handlers.onLog(`file offer rejected: ${String(e)}`);
@@ -240,6 +269,21 @@ export class SyncSession {
         if (!asm) break;
         try {
           const data = asm.finish(payload.sha256);
+          if (asm.purpose === "clipboard") {
+            this.loop.rememberHash(payload.sha256, body.from);
+            await this.handlers.onClipboardImage?.(
+              {
+                name: asm.name,
+                mimeType: asm.mimeType,
+                dataBase64: toBase64(data),
+                size: asm.size,
+                hash: payload.sha256,
+              },
+              body.from,
+            );
+            this.handlers.onLog(`clipboard image complete ${asm.name}`);
+            break;
+          }
           await this.handlers.onFileTransfer?.(
             {
               name: asm.name,
@@ -338,13 +382,41 @@ export class SyncSession {
     );
   }
 
-  async sendFile(file: {
+  async sendClipboardImage(file: {
     name: string;
     mimeType: string;
     data: Uint8Array;
   }): Promise<void> {
     if (!this.peer) throw new Error("no peer paired");
-    assertSendableSize(file.data.byteLength);
+    assertClipboardImageSize(file.data.byteLength);
+    const hash = hashBytes(file.data);
+    if (this.loop.shouldSkipOutboundHash(hash, this.local.deviceId)) {
+      this.handlers.onLog("skip clipboard image echo");
+      return;
+    }
+    await this.sendFile({
+      ...file,
+      purpose: "clipboard",
+      hash,
+    });
+  }
+
+  async sendFile(file: {
+    name: string;
+    mimeType: string;
+    data: Uint8Array;
+    purpose?: "file" | "clipboard";
+    hash?: string;
+  }): Promise<void> {
+    if (!this.peer) throw new Error("no peer paired");
+    const purpose = file.purpose === "clipboard" ? "clipboard" : "file";
+    if (purpose === "clipboard") {
+      assertClipboardImageSize(file.data.byteLength);
+    } else {
+      assertSendableSize(file.data.byteLength);
+    }
+    const hash =
+      file.hash ?? (purpose === "clipboard" ? hashBytes(file.data) : undefined);
     if (file.data.byteLength <= FILE_CHUNK_BYTES) {
       await this.sendBody(
         fileTransferBody(
@@ -354,11 +426,15 @@ export class SyncSession {
             mimeType: file.mimeType,
             dataBase64: toBase64(file.data),
             size: file.data.byteLength,
+            purpose: purpose === "clipboard" ? "clipboard" : undefined,
+            hash,
           },
           this.peer.deviceId,
         ),
       );
-      this.handlers.onLog(`sent file ${file.name} (${file.data.byteLength} B)`);
+      this.handlers.onLog(
+        `sent ${purpose === "clipboard" ? "clipboard image" : "file"} ${file.name} (${file.data.byteLength} B)`,
+      );
       return;
     }
     const transferId = bytesToHex(randomBytes(8));
@@ -372,6 +448,8 @@ export class SyncSession {
           mimeType: file.mimeType,
           size: file.data.byteLength,
           totalChunks,
+          purpose: purpose === "clipboard" ? "clipboard" : undefined,
+          hash,
         },
         this.peer.deviceId,
       ),
@@ -406,7 +484,7 @@ export class SyncSession {
       ),
     );
     this.handlers.onLog(
-      `sent file ${file.name} (${file.data.byteLength} B, ${totalChunks} chunks)`,
+      `sent ${purpose === "clipboard" ? "clipboard image" : "file"} ${file.name} (${file.data.byteLength} B, ${totalChunks} chunks)`,
     );
   }
 

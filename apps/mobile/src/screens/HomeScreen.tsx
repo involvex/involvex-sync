@@ -1,4 +1,5 @@
 import * as Clipboard from "expo-clipboard";
+import * as FileSystem from "expo-file-system/legacy";
 import { Pressable, ScrollView, Text, View } from "react-native";
 import { useSession } from "../sessionContext";
 import { useTheme } from "../themeContext";
@@ -57,7 +58,8 @@ export function HomeScreen() {
       <View style={styles.card}>
         <Text style={styles.h2}>Clipboard</Text>
         <Text style={styles.muted}>
-          Send the current phone clipboard to the PC.
+          Send text or image from the phone clipboard to the PC. Auto sync is
+          under Settings.
         </Text>
         <Pressable style={styles.btn} onPress={() => void sendClipboardLink()}>
           <Text style={styles.btnText}>Send clipboard to PC</Text>
@@ -73,14 +75,28 @@ export function HomeScreen() {
             <View key={entry.id} style={styles.historyRow}>
               <Pressable
                 style={{ flex: 1 }}
-                onPress={() =>
+                onPress={() => {
+                  if (entry.kind === "image" && entry.imageUri) {
+                    void FileSystem.readAsStringAsync(entry.imageUri, {
+                      encoding: FileSystem.EncodingType.Base64,
+                    })
+                      .then((b64) => Clipboard.setImageAsync(b64))
+                      .then(() => log("copied image from history"))
+                      .catch(() =>
+                        Clipboard.setStringAsync(entry.text).then(() =>
+                          log("copied image label"),
+                        ),
+                      );
+                    return;
+                  }
                   void Clipboard.setStringAsync(entry.text).then(() =>
                     log("copied from history"),
-                  )
-                }
+                  );
+                }}
               >
                 <Text style={styles.historyText} numberOfLines={2}>
-                  [{entry.direction}] {entry.text}
+                  [{entry.direction}]{entry.kind === "image" ? " 🖼 " : " "}
+                  {entry.text}
                 </Text>
               </Pressable>
               <Pressable

@@ -1,6 +1,7 @@
 import {
   DEFAULT_PORT,
   MAX_CHUNKED_FILE_BYTES,
+  MAX_CLIPBOARD_IMAGE_BYTES,
   buildPairingPayload,
   deviceFingerprint,
   fromBase64,
@@ -32,6 +33,15 @@ import {
   isA11yReceiveEnabled,
   isA11yServiceGranted,
 } from "../modules/invx-a11y/src";
+import {
+  addClipboardImageListener,
+  addClipboardTextListener,
+  compressClipboardImageNative,
+  setClipboardAutoEnabled,
+  setClipboardImeActive,
+  setClipboardIncludeImages,
+  setNativeClipboardImage,
+} from "../modules/invx-clipboard/src";
 import {
   addImeActiveListener,
   imeCommitText,
@@ -239,6 +249,8 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     incomingFilesUri: "",
     incomingFilesLabel: "",
     allowRemoteTermux: false,
+    autoClipboardSync: false,
+    autoClipboardImages: true,
     theme: "system",
   });
   const [pwshCmd, setPwshCmd] = useState("");
@@ -277,8 +289,12 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const pushHistory = useCallback(
-    async (text: string, direction: ClipboardHistoryEntry["direction"]) => {
-      const next = await appendClipboardHistory(text, direction);
+    async (
+      text: string,
+      direction: ClipboardHistoryEntry["direction"],
+      opts?: { kind?: "text" | "image"; imageUri?: string },
+    ) => {
+      const next = await appendClipboardHistory(text, direction, opts);
       setHistory(next);
     },
     [],
@@ -337,7 +353,10 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       setImeActive(await isImeActive());
       setA11yReceive(await isA11yReceiveEnabled());
       setA11yGranted(await isA11yServiceGranted());
-      setAppSettings(await loadAppSettings());
+      const settings = await loadAppSettings();
+      setAppSettings(settings);
+      await setClipboardAutoEnabled(settings.autoClipboardSync);
+      await setClipboardIncludeImages(settings.autoClipboardImages);
     })();
   }, []);
 
@@ -391,11 +410,73 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     const sub = addImeActiveListener((active) => {
       setImeActive(active);
       imeActiveRef.current = active;
+      void setClipboardImeActive(active);
       pushKeyboardStatus();
       log(active ? "Sync Keyboard active" : "Sync Keyboard inactive");
     });
     return () => sub.remove();
   }, [log, pushKeyboardStatus]);
+
+  useEffect(() => {
+    void setClipboardAutoEnabled(appSettings.autoClipboardSync);
+    void setClipboardIncludeImages(appSettings.autoClipboardImages);
+  }, [appSettings.autoClipboardSync, appSettings.autoClipboardImages]);
+
+  useEffect(() => {
+    if (!appSettings.autoClipboardSync) return;
+    const textSub = addClipboardTextListener((text) => {
+      const s = sessionRef.current;
+      if (!s?.isOpen || !text.trim()) return;
+      try {
+        const url = parseAllowedUrl(text);
+        if (url) {
+          s.sendShareUrl(url);
+          void pushHistory(url, "out");
+          log("auto clipboard url → PC");
+        } else {
+          s.sendClipboard(text);
+          void pushHistory(text, "out");
+          log("auto clipboard text → PC");
+        }
+      } catch (e) {
+        log(`auto clipboard: ${String(e)}`);
+      }
+    });
+    const imageSub = addClipboardImageListener((image) => {
+      if (!appSettingsRef.current.autoClipboardImages) return;
+      const s = sessionRef.current;
+      if (!s?.isOpen) return;
+      void (async () => {
+        try {
+          let payload = image;
+          if (image.size > MAX_CLIPBOARD_IMAGE_BYTES) {
+            const compressed = await compressClipboardImageNative(
+              image.dataBase64,
+              MAX_CLIPBOARD_IMAGE_BYTES,
+            );
+            if (!compressed) {
+              log("auto clipboard image too large");
+              return;
+            }
+            payload = compressed;
+          }
+          s.sendClipboardImage({
+            name: payload.name,
+            mimeType: payload.mimeType,
+            dataBase64: payload.dataBase64,
+          });
+          await pushHistory("[Image]", "out", { kind: "image" });
+          log("auto clipboard image → PC");
+        } catch (e) {
+          log(`auto clipboard image: ${String(e)}`);
+        }
+      })();
+    });
+    return () => {
+      textSub.remove();
+      imageSub.remove();
+    };
+  }, [appSettings.autoClipboardSync, log, pushHistory]);
 
   useEffect(() => {
     if (!identity) return;
@@ -426,6 +507,28 @@ export function SessionProvider({ children }: { children: ReactNode }) {
         await Clipboard.setStringAsync(text);
         await pushHistory(text, "in");
         log("clipboard set from desktop");
+      },
+      onClipboardImage: async (file) => {
+        try {
+          const root = FileSystem.cacheDirectory;
+          let imageUri: string | undefined;
+          if (root) {
+            const path = `${root}clip-in-${Date.now()}.jpg`;
+            await FileSystem.writeAsStringAsync(path, file.dataBase64, {
+              encoding: FileSystem.EncodingType.Base64,
+            });
+            imageUri = path;
+          }
+          try {
+            await Clipboard.setImageAsync(file.dataBase64);
+          } catch {
+            await setNativeClipboardImage(file.dataBase64, file.mimeType);
+          }
+          await pushHistory("[Image]", "in", { kind: "image", imageUri });
+          log("clipboard image set from desktop");
+        } catch (e) {
+          log(`clipboard image apply failed: ${String(e)}`);
+        }
       },
       onTermuxOpenUrl: async (url) => {
         try {
@@ -1069,8 +1172,40 @@ export function SessionProvider({ children }: { children: ReactNode }) {
         } catch (e) {
           log(`send failed: ${String(e)}`);
         }
-      } else {
-        log("clipboard empty");
+        return;
+      }
+      try {
+        const img = await Clipboard.getImageAsync({ format: "jpeg" });
+        if (!img?.data) {
+          log("clipboard empty");
+          return;
+        }
+        let dataBase64 = img.data;
+        let mimeType = "image/jpeg";
+        let name = `clipboard-${Date.now()}.jpg`;
+        const approx = Math.floor((dataBase64.length * 3) / 4);
+        if (approx > MAX_CLIPBOARD_IMAGE_BYTES) {
+          const compressed = await compressClipboardImageNative(
+            dataBase64,
+            MAX_CLIPBOARD_IMAGE_BYTES,
+          );
+          if (!compressed) {
+            log("clipboard image too large");
+            return;
+          }
+          dataBase64 = compressed.dataBase64;
+          mimeType = compressed.mimeType;
+          name = compressed.name;
+        }
+        sessionRef.current?.sendClipboardImage({
+          name,
+          mimeType,
+          dataBase64,
+        });
+        await pushHistory("[Image]", "out", { kind: "image" });
+        log("sent clipboard image");
+      } catch (e) {
+        log(`send image failed: ${String(e)}`);
       }
       return;
     }
@@ -1081,6 +1216,39 @@ export function SessionProvider({ children }: { children: ReactNode }) {
 
   async function resendHistory(entry: ClipboardHistoryEntry): Promise<void> {
     try {
+      if (entry.kind === "image" && entry.imageUri) {
+        const dataBase64 = await FileSystem.readAsStringAsync(entry.imageUri, {
+          encoding: FileSystem.EncodingType.Base64,
+        });
+        let payload = {
+          name: `clipboard-${Date.now()}.jpg`,
+          mimeType: "image/jpeg",
+          dataBase64,
+        };
+        const approx = Math.floor((dataBase64.length * 3) / 4);
+        if (approx > MAX_CLIPBOARD_IMAGE_BYTES) {
+          const compressed = await compressClipboardImageNative(
+            dataBase64,
+            MAX_CLIPBOARD_IMAGE_BYTES,
+          );
+          if (!compressed) {
+            log("history image too large");
+            return;
+          }
+          payload = {
+            name: compressed.name,
+            mimeType: compressed.mimeType,
+            dataBase64: compressed.dataBase64,
+          };
+        }
+        sessionRef.current?.sendClipboardImage(payload);
+        await pushHistory("[Image]", "out", {
+          kind: "image",
+          imageUri: entry.imageUri,
+        });
+        log("resent clipboard image");
+        return;
+      }
       const url = parseAllowedUrl(entry.text);
       if (url) {
         sessionRef.current?.sendShareUrl(url);

@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { hashBytes } from "./crypto";
 import { LoopGuard } from "./loop";
 
 describe("LoopGuard", () => {
@@ -20,6 +21,23 @@ describe("LoopGuard", () => {
     guard.remember("copied text", "phone", now);
     expect(
       guard.shouldSkipOutbound("copied text", "desktop", now + 2_000),
+    ).toBe(false);
+  });
+
+  test("skips outbound image by content hash", () => {
+    const guard = new LoopGuard({ windowMs: 5_000 });
+    const now = 1_000_000;
+    const digest = hashBytes(new Uint8Array([1, 2, 3, 4]));
+    guard.rememberHash(digest, "phone", now);
+    expect(guard.shouldSkipOutboundHash(digest, "desktop", now + 50)).toBe(
+      true,
+    );
+    expect(
+      guard.shouldSkipOutboundHash(
+        hashBytes(new Uint8Array([9])),
+        "desktop",
+        now,
+      ),
     ).toBe(false);
   });
 });

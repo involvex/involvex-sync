@@ -121,6 +121,53 @@ export function SettingsScreen() {
         <View style={styles.divider} />
         <View style={styles.settingRow}>
           <View style={styles.settingCopy}>
+            <Text style={styles.body}>Auto sync clipboard</Text>
+            <Text style={styles.muted}>
+              While this app is open, or Sync Keyboard is selected. PC must
+              enable auto sync too.
+            </Text>
+          </View>
+          <Switch
+            value={appSettings.autoClipboardSync}
+            onValueChange={(next) => {
+              void saveAppSettings({ autoClipboardSync: next }).then(
+                setAppSettings,
+              );
+              log(next ? "auto clipboard on" : "auto clipboard off");
+            }}
+            trackColor={{
+              false: colors.switchTrackOff,
+              true: colors.switchTrackOn,
+            }}
+            thumbColor={colors.switchThumb}
+          />
+        </View>
+        <View style={styles.settingRow}>
+          <View style={styles.settingCopy}>
+            <Text style={styles.body}>Include images</Text>
+            <Text style={styles.muted}>
+              Screenshots and copied images (≤2 MiB)
+            </Text>
+          </View>
+          <Switch
+            value={appSettings.autoClipboardImages}
+            disabled={!appSettings.autoClipboardSync}
+            onValueChange={(next) => {
+              void saveAppSettings({ autoClipboardImages: next }).then(
+                setAppSettings,
+              );
+              log(next ? "clipboard images on" : "clipboard images off");
+            }}
+            trackColor={{
+              false: colors.switchTrackOff,
+              true: colors.switchTrackOn,
+            }}
+            thumbColor={colors.switchThumb}
+          />
+        </View>
+        <View style={styles.divider} />
+        <View style={styles.settingRow}>
+          <View style={styles.settingCopy}>
             <Text style={styles.body}>Sync Keyboard</Text>
             <Text style={styles.muted}>
               IME {imeActive ? "active" : "inactive"} · enable in Android input
