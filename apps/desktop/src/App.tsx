@@ -43,6 +43,7 @@ import {
   appendClipboardHistory,
   clearClipboardHistory,
   loadClipboardHistory,
+  removeClipboardHistory,
   type ClipboardHistoryEntry,
 } from "./services/clipboardHistory";
 import {
@@ -525,12 +526,8 @@ export default function App() {
             try {
               const text = e.payload;
               await writeText(text);
-              const url = parseAllowedUrl(text);
-              if (url) {
-                await s.sendShareUrl(url);
-              } else {
-                await s.sendClipboard(text);
-              }
+              // Clipboard path never auto-opens URLs.
+              await s.sendClipboard(text);
               pushHistory(text, "out");
               log("isync clipboard → phone");
             } catch (err) {
@@ -837,14 +834,7 @@ export default function App() {
         toast("Clipboard empty", "err");
         return;
       }
-      const url = parseAllowedUrl(text);
-      if (url) {
-        await session.sendShareUrl(url);
-        pushHistory(url, "out");
-        log(`sent clipboard url ${url}`);
-        toast("Link sent", "ok");
-        return;
-      }
+      // Clipboard sync never auto-opens URLs — peer clipboard + history only.
       await session.sendClipboard(text);
       pushHistory(text, "out");
       log("sent clipboard text");
@@ -914,16 +904,9 @@ export default function App() {
         if (text && text !== lastText) {
           lastText = text;
           lastImageKey = "";
-          const url = parseAllowedUrl(text);
-          if (url) {
-            await sessionRef.current.sendShareUrl(url);
-            pushHistory(url, "out");
-            log("auto clipboard url → phone");
-          } else {
-            await sessionRef.current.sendClipboard(text);
-            pushHistory(text, "out");
-            log("auto clipboard text → phone");
-          }
+          await sessionRef.current.sendClipboard(text);
+          pushHistory(text, "out");
+          log("auto clipboard text → phone");
           return;
         }
         if (!cfg.autoClipboardImages) return;
@@ -1106,9 +1089,7 @@ export default function App() {
         toast("Image resent", "ok");
         return;
       }
-      const url = parseAllowedUrl(entry.text);
-      if (url) await session.sendShareUrl(url);
-      else await session.sendClipboard(entry.text);
+      await session.sendClipboard(entry.text);
       pushHistory(entry.text, "out");
       log("resent from history");
       toast("Resent", "ok");
@@ -1738,6 +1719,15 @@ export default function App() {
                       onClick={() => void resendHistory(entry)}
                     >
                       Send
+                    </button>
+                    <button
+                      type="button"
+                      className="ghost"
+                      onClick={() =>
+                        setHistory(removeClipboardHistory(entry.id))
+                      }
+                    >
+                      Remove
                     </button>
                   </li>
                 ))}

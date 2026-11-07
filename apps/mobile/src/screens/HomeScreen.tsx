@@ -17,6 +17,7 @@ export function HomeScreen() {
     history,
     sendClipboardLink,
     resendHistory,
+    removeHistory,
     log,
   } = useSession();
 
@@ -104,6 +105,12 @@ export function HomeScreen() {
                 onPress={() => void resendHistory(entry)}
               >
                 <Text style={styles.btnTextSm}>Send</Text>
+              </Pressable>
+              <Pressable
+                style={styles.btnGhostSm}
+                onPress={() => void removeHistory(entry.id)}
+              >
+                <Text style={styles.btnTextSm}>Remove</Text>
               </Pressable>
             </View>
           ))

@@ -6,7 +6,6 @@ import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.net.Uri
-import android.os.Build
 import android.util.Base64
 import java.io.ByteArrayOutputStream
 import java.io.File
@@ -206,13 +205,8 @@ object InvxClipboardBridge {
       val uri = Uri.fromFile(outFile)
       // Prefer content URI via FileProvider when available; file:// still works for own process paste.
       val clip = ClipData.newUri(context.contentResolver, "image", uri)
-      // Also attach bitmap description for older paste targets.
-      if (Build.VERSION.SDK_INT >= 24) {
-        cm.setPrimaryClip(clip)
-      } else {
-        @Suppress("DEPRECATION")
-        cm.primaryClip = clip
-      }
+      // primaryClip is a val getter on modern SDKs — always use setPrimaryClip (API 11+).
+      cm.setPrimaryClip(clip)
       lastFingerprint = "u:$uri"
       true
     } catch (_: Exception) {

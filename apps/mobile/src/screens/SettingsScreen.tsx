@@ -61,6 +61,7 @@ export function SettingsScreen() {
     setShowActivity,
     logs,
     log,
+    testTermux,
   } = useSession();
 
   return (
@@ -118,6 +119,15 @@ export function SettingsScreen() {
             thumbColor={colors.switchThumb}
           />
         </View>
+        <Text style={styles.muted}>
+          Required in Termux: set allow-external-apps=true in
+          ~/.termux/termux.properties, then restart Termux. For termux-toast /
+          termux-open-url run: pkg install termux-api. Test Termux should show
+          real stdout/exit — not just “started”.
+        </Text>
+        <Pressable style={styles.linkBtn} onPress={() => void testTermux()}>
+          <Text style={styles.linkText}>Test Termux RUN_COMMAND</Text>
+        </Pressable>
         <View style={styles.divider} />
         <View style={styles.settingRow}>
           <View style={styles.settingCopy}>

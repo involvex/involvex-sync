@@ -68,6 +68,20 @@ export async function appendClipboardHistory(
   return next;
 }
 
+export async function removeClipboardHistory(
+  id: string,
+): Promise<ClipboardHistoryEntry[]> {
+  const next = (await loadClipboardHistory()).filter((e) => e.id !== id);
+  try {
+    await SecureStore.setItemAsync(KEY, JSON.stringify(next));
+  } catch {
+    const slim = next.slice(0, 20);
+    await SecureStore.setItemAsync(KEY, JSON.stringify(slim));
+    return slim;
+  }
+  return next;
+}
+
 export async function clearClipboardHistory(): Promise<void> {
   await SecureStore.deleteItemAsync(KEY);
 }

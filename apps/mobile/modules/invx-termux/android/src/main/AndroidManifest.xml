@@ -2,5 +2,14 @@
   <uses-permission android:name="com.involvex.termux_app.permission.RUN_COMMAND" />
   <queries>
     <package android:name="com.involvex.termux_app" />
+    <package android:name="com.termux" />
   </queries>
+  <application>
+    <receiver
+      android:name="app.involvex.sync.termux.InvxTermuxResultReceiver"
+      android:exported="false" />
+    <service
+      android:name="app.involvex.sync.termux.InvxTermuxResultService"
+      android:exported="false" />
+  </application>
 </manifest>

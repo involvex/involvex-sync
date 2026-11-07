@@ -56,6 +56,12 @@ export function appendClipboardHistory(
   return next;
 }
 
+export function removeClipboardHistory(id: string): ClipboardHistoryEntry[] {
+  const next = loadClipboardHistory().filter((e) => e.id !== id);
+  localStorage.setItem(KEY, JSON.stringify(next));
+  return next;
+}
+
 export function clearClipboardHistory(): void {
   localStorage.removeItem(KEY);
 }

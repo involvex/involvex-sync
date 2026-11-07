@@ -38,8 +38,14 @@
 - Phone pushes when the app is foreground **or** Sync Keyboard IME is
   selected (IME may read clipboard on Android 10+). Share / Send remain.
 - Images travel as chunked `file_*` with `purpose: "clipboard"` (≤2 MiB).
+- Clipboard sync never auto-opens URLs (stays on `clipboard_update` + history).
+  Use the explicit Send link UI for `share_url` open-in-browser.
 - Echo suppression uses `LoopGuard` on text or image content hash.
 - Not Microsoft Phone Link — same E2E stack as the rest of Sync.
+- **Future (not built):** true background phone→PC without IME could use
+  **Shizuku** (privileged clipboard binder as shell UID) or an overlay
+  focus trick. Shizuku needs the Shizuku app authorized + restarted after
+  reboot; OEM battery killers still apply. Keep Share / IME as defaults.
 
 ## Android constraints
 
@@ -59,7 +65,13 @@ InVx Termux package: `com.involvex.termux_app`.
 - involvex Sync must `uses-permission` it, add `<queries>` for the package,
   request it at runtime, then `startForegroundService` with action
   `com.involvex.termux_app.RUN_COMMAND`.
-- Only allowlisted binaries (`termux-open-url`, `termux-clipboard-set`) — no free shell.
+- Paths use `$PREFIX/bin/...` (Termux expands). Remote shell is allowlisted
+  `bash -lc` when “Allow remote Termux” is on.
+- **Phone setup (otherwise commands silently do nothing):**
+  1. In `~/.termux/termux.properties` set `allow-external-apps=true`, restart Termux.
+  2. Grant Sync the RUN_COMMAND permission when prompted.
+  3. For `termux-toast` / `termux-open-url`: `pkg install termux-api`
+     (and Termux:API companion app if your build needs it).
 
 ## Notification mirror
 

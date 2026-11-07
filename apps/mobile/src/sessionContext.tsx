@@ -7,7 +7,6 @@ import {
   fromBase64,
   looksLikeUrl,
   pairingQrText,
-  parseAllowedUrl,
   parsePairingQr,
 } from "@involvex/protocol";
 import { useCameraPermissions } from "expo-camera";
@@ -72,10 +71,15 @@ import {
   getSharedText,
   readSharedFileBase64,
 } from "../modules/invx-share/src";
-import { startTermuxRunCommand } from "../modules/invx-termux/src";
+import {
+  isTermuxInstalled,
+  startTermuxRunCommand,
+  TERMUX_SETUP_HINT,
+} from "../modules/invx-termux/src";
 import {
   appendClipboardHistory,
   loadClipboardHistory,
+  removeClipboardHistory,
   type ClipboardHistoryEntry,
 } from "./clipboardHistory";
 import {
@@ -195,6 +199,8 @@ export type SessionContextValue = {
   copyPairingJson: () => Promise<void>;
   sendClipboardLink: () => Promise<void>;
   resendHistory: (entry: ClipboardHistoryEntry) => Promise<void>;
+  removeHistory: (id: string) => Promise<void>;
+  testTermux: () => Promise<void>;
   pushKeyboardStatus: () => void;
   setImeReceive: (v: boolean) => void;
   setA11yReceive: (v: boolean) => void;
@@ -428,16 +434,10 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       const s = sessionRef.current;
       if (!s?.isOpen || !text.trim()) return;
       try {
-        const url = parseAllowedUrl(text);
-        if (url) {
-          s.sendShareUrl(url);
-          void pushHistory(url, "out");
-          log("auto clipboard url → PC");
-        } else {
-          s.sendClipboard(text);
-          void pushHistory(text, "out");
-          log("auto clipboard text → PC");
-        }
+        // URLs stay on clipboard_update (history only) — do not auto-open.
+        s.sendClipboard(text);
+        void pushHistory(text, "out");
+        log("auto clipboard text → PC");
       } catch (e) {
         log(`auto clipboard: ${String(e)}`);
       }
@@ -496,12 +496,9 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     if (!identity) return null;
     const s = new MobileSession(identity, {
       onShareUrl: async (url) => {
+        // History + notification only — never auto-open the browser.
+        await pushHistory(url, "in");
         await openUrlViaNotification(url);
-        try {
-          await Linking.openURL(url);
-        } catch {
-          /* user taps notification */
-        }
       },
       onClipboard: async (text) => {
         await Clipboard.setStringAsync(text);
@@ -532,34 +529,38 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       },
       onTermuxOpenUrl: async (url) => {
         try {
-          const ok = await startTermuxRunCommand(
+          const result = await startTermuxRunCommand(
             allowlistedRunSpec({ command: "open-url", url }),
           );
-          log(ok ? `termux open-url ${url}` : "termux open-url denied");
-          if (!ok) {
+          log(
+            result.ok
+              ? `termux open-url ${url}`
+              : `termux open-url failed: ${result.errmsg || result.stderr || `exit ${result.exitCode}`}`,
+          );
+          // Always land in history; open only via notification tap.
+          await pushHistory(url, "in");
+          if (!result.ok) {
             await openUrlViaNotification(url);
-            try {
-              await Linking.openURL(url);
-            } catch {
-              /* notification fallback */
-            }
           }
         } catch (e) {
           log(`termux open-url failed: ${String(e)}`);
+          await pushHistory(url, "in");
           await openUrlViaNotification(url);
         }
       },
       onTermuxClipboardSet: async (text) => {
         try {
-          const ok = await startTermuxRunCommand(
+          const result = await startTermuxRunCommand(
             allowlistedRunSpec({ command: "clipboard-set", text }),
           );
-          if (ok) {
+          if (result.ok) {
             await pushHistory(text, "in");
             log("termux clipboard-set");
             return;
           }
-          log("termux clipboard denied — using Expo clipboard");
+          log(
+            `termux clipboard denied — using Expo clipboard (${result.errmsg || result.stderr || `exit ${result.exitCode}`})`,
+          );
         } catch (e) {
           log(`termux clipboard failed: ${String(e)}`);
         }
@@ -626,22 +627,31 @@ export function SessionProvider({ children }: { children: ReactNode }) {
           return;
         }
         try {
-          const ok = await startTermuxRunCommand(
+          const result = await startTermuxRunCommand(
             allowlistedRunSpec({
               command: "shell",
               script: request.command,
             }),
           );
+          const stderrParts = [
+            result.stderr,
+            result.errmsg,
+            result.ok ? "" : TERMUX_SETUP_HINT,
+          ].filter(Boolean);
           sessionRef.current?.sendRemoteCommandResult({
             requestId: request.requestId,
-            ok,
-            exitCode: ok ? 0 : 1,
-            stdout: ok ? "started in Termux" : "",
-            stderr: ok ? "" : "Termux RUN_COMMAND denied or failed",
+            ok: result.ok,
+            exitCode: result.exitCode,
+            stdout: result.stdout,
+            stderr: stderrParts.join("\n"),
           });
-          log(ok ? `termux started: ${request.command}` : "termux denied");
+          log(
+            result.ok
+              ? `termux ok: ${request.command}`
+              : `termux fail: ${result.errmsg || result.stderr || `exit ${result.exitCode}`}`,
+          );
         } catch (e) {
-          const msg = String(e);
+          const msg = `${String(e)}\n${TERMUX_SETUP_HINT}`;
           sessionRef.current?.sendRemoteCommandResult({
             requestId: request.requestId,
             ok: false,
@@ -1162,56 +1172,50 @@ export function SessionProvider({ children }: { children: ReactNode }) {
 
   async function sendClipboardLink(): Promise<void> {
     const text = await Clipboard.getStringAsync();
-    const url = parseAllowedUrl(text);
-    if (!url) {
-      if (text) {
-        try {
-          sessionRef.current?.sendClipboard(text);
-          await pushHistory(text, "out");
-          log("sent clipboard text");
-        } catch (e) {
-          log(`send failed: ${String(e)}`);
-        }
-        return;
-      }
+    if (text) {
       try {
-        const img = await Clipboard.getImageAsync({ format: "jpeg" });
-        if (!img?.data) {
-          log("clipboard empty");
-          return;
-        }
-        let dataBase64 = img.data;
-        let mimeType = "image/jpeg";
-        let name = `clipboard-${Date.now()}.jpg`;
-        const approx = Math.floor((dataBase64.length * 3) / 4);
-        if (approx > MAX_CLIPBOARD_IMAGE_BYTES) {
-          const compressed = await compressClipboardImageNative(
-            dataBase64,
-            MAX_CLIPBOARD_IMAGE_BYTES,
-          );
-          if (!compressed) {
-            log("clipboard image too large");
-            return;
-          }
-          dataBase64 = compressed.dataBase64;
-          mimeType = compressed.mimeType;
-          name = compressed.name;
-        }
-        sessionRef.current?.sendClipboardImage({
-          name,
-          mimeType,
-          dataBase64,
-        });
-        await pushHistory("[Image]", "out", { kind: "image" });
-        log("sent clipboard image");
+        // Clipboard path never auto-opens URLs — history + peer clipboard only.
+        sessionRef.current?.sendClipboard(text);
+        await pushHistory(text, "out");
+        log("sent clipboard text");
       } catch (e) {
-        log(`send image failed: ${String(e)}`);
+        log(`send failed: ${String(e)}`);
       }
       return;
     }
-    sessionRef.current?.sendShareUrl(url);
-    await pushHistory(url, "out");
-    log(`sent ${url}`);
+    try {
+      const img = await Clipboard.getImageAsync({ format: "jpeg" });
+      if (!img?.data) {
+        log("clipboard empty");
+        return;
+      }
+      let dataBase64 = img.data;
+      let mimeType = "image/jpeg";
+      let name = `clipboard-${Date.now()}.jpg`;
+      const approx = Math.floor((dataBase64.length * 3) / 4);
+      if (approx > MAX_CLIPBOARD_IMAGE_BYTES) {
+        const compressed = await compressClipboardImageNative(
+          dataBase64,
+          MAX_CLIPBOARD_IMAGE_BYTES,
+        );
+        if (!compressed) {
+          log("clipboard image too large");
+          return;
+        }
+        dataBase64 = compressed.dataBase64;
+        mimeType = compressed.mimeType;
+        name = compressed.name;
+      }
+      sessionRef.current?.sendClipboardImage({
+        name,
+        mimeType,
+        dataBase64,
+      });
+      await pushHistory("[Image]", "out", { kind: "image" });
+      log("sent clipboard image");
+    } catch (e) {
+      log(`send image failed: ${String(e)}`);
+    }
   }
 
   async function resendHistory(entry: ClipboardHistoryEntry): Promise<void> {
@@ -1249,16 +1253,48 @@ export function SessionProvider({ children }: { children: ReactNode }) {
         log("resent clipboard image");
         return;
       }
-      const url = parseAllowedUrl(entry.text);
-      if (url) {
-        sessionRef.current?.sendShareUrl(url);
-      } else {
-        sessionRef.current?.sendClipboard(entry.text);
-      }
+      sessionRef.current?.sendClipboard(entry.text);
       await pushHistory(entry.text, "out");
       log("resent from history");
     } catch (e) {
       log(`resend failed: ${String(e)}`);
+    }
+  }
+
+  async function removeHistory(id: string): Promise<void> {
+    setHistory(await removeClipboardHistory(id));
+  }
+
+  async function testTermux(): Promise<void> {
+    try {
+      if (!(await isTermuxInstalled())) {
+        log(
+          `Termux missing — Sync targets com.involvex.termux_app (InVx / I:/dev/termux-app). ${TERMUX_SETUP_HINT}`,
+        );
+        return;
+      }
+      log("Termux target: com.involvex.termux_app (InVxTermux)");
+      const result = await startTermuxRunCommand(
+        allowlistedRunSpec({
+          command: "shell",
+          script:
+            'echo "involvex-termux-ok"; command -v termux-toast >/dev/null && termux-toast "involvex Sync ok" || echo "termux-toast missing (pkg install termux-api)"',
+        }),
+      );
+      const meta = [result.termuxPackage, result.commandPath]
+        .filter(Boolean)
+        .join(" · ");
+      if (result.ok) {
+        log(
+          `Termux test ok: ${(result.stdout || "").trim() || "exit 0"}${meta ? ` [${meta}]` : ""}`,
+        );
+      } else {
+        log(
+          `Termux test fail exit ${result.exitCode}: ${result.errmsg || result.stderr || "(no detail)"}${meta ? ` [${meta}]` : ""}\n${TERMUX_SETUP_HINT}`,
+        );
+      }
+    } catch (e) {
+      log(`Termux test: ${String(e)}\n${TERMUX_SETUP_HINT}`);
     }
   }
 
@@ -1348,6 +1384,8 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     copyPairingJson,
     sendClipboardLink,
     resendHistory,
+    removeHistory,
+    testTermux,
     pushKeyboardStatus,
     setImeReceive,
     setA11yReceive,
