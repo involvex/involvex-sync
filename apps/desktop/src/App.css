@@ -453,6 +453,11 @@ code {
   color: var(--text);
 }
 
+.drive-meta {
+  white-space: nowrap;
+  padding-top: 0.3rem;
+}
+
 details summary {
   cursor: pointer;
   color: var(--text-muted);

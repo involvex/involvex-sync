@@ -8,7 +8,7 @@
   ],
   "scripts": {
     "build": "bun run --filter @involvex/protocol build",
-    "test": "bun run --filter @involvex/protocol test",
+    "test": "bun run --filter @involvex/protocol test && bun run --filter @involvex/desktop test",
     "lint": "bun lint",
     "fmt": "bun fmt",
     "check": "bun check --no-script -p packages/protocol && bun check --no-script -p apps/desktop && bun check --no-script -p apps/mobile && bun check --no-script -p apps/cli && bun check --no-script -p workers/relay && bun check --no-script -p workers/oauth-token-exchange",

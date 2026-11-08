@@ -8,7 +8,8 @@
     "build": "tsc && vite build",
     "preview": "vite preview",
     "tauri": "tauri",
-    "check": "bun check"
+    "check": "bun check && bun check -p tsconfig.test.json",
+    "test": "bun test"
   },
   "dependencies": {
     "@involvex/protocol": "workspace:*",
@@ -23,6 +24,7 @@
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2",
+    "@types/bun": "^1.2.2",
     "@types/qrcode": "^1.5.5",
     "@types/react": "^19.1.8",
     "@types/react-dom": "^19.1.6",

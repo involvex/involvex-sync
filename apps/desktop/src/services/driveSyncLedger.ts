@@ -45,6 +45,17 @@ export function isDriveSynced(
   return Boolean(hit && hit.size === size && hit.mtimeMs === mtimeMs);
 }
 
+/** True when a Drive file id was recorded by a previous successful upload. */
+export function hasDriveFileId(
+  ledger: DriveSyncLedger,
+  fileId: string,
+): boolean {
+  for (const entry of Object.values(ledger)) {
+    if (entry.fileId === fileId) return true;
+  }
+  return false;
+}
+
 export function markDriveSynced(
   ledger: DriveSyncLedger,
   relativeName: string,

@@ -65,12 +65,23 @@ import {
   type FolderSyncLedger,
 } from "./services/folderSyncLedger";
 import {
+  hasDriveFileId,
   isDriveSynced,
   loadDriveLedger,
   markDriveSynced,
   type DriveSyncLedger,
 } from "./services/driveSyncLedger";
-import { probeGws, uploadFileToDrive } from "./services/gwsDrive";
+import {
+  DRIVE_PAGE_SIZE_DEFAULT,
+  formatDriveSize,
+  formatDriveTime,
+  listDriveFiles,
+  normalizeDriveFolderId,
+  openDriveFile,
+  probeGws,
+  uploadFileToDrive,
+  type DriveFileEntry,
+} from "./services/gwsDrive";
 import {
   loadSettings,
   resolveThemeMode,
@@ -163,6 +174,36 @@ type ShellResult = {
   stderr: string;
 };
 
+/** Read-only Drive browser state (`gws drive files list`). */
+type DriveBrowser = {
+  /** Trail used by the "Up" button. Last entry is the current folder. */
+  crumbs: Array<{ id?: string; name: string }>;
+  /** Page token of the visible page (undefined = first page). */
+  token?: string;
+  /** Tokens of previous pages, for "Newer". */
+  tokenStack: Array<string | undefined>;
+  files: DriveFileEntry[];
+  /** Drive ids already uploaded by folder sync, for the "synced" marker. */
+  syncedIds: Set<string>;
+  nextToken?: string;
+  /** True once at least one page loaded successfully. */
+  started: boolean;
+  busy: boolean;
+  error: string;
+};
+
+function emptyDriveBrowser(): DriveBrowser {
+  return {
+    crumbs: [],
+    tokenStack: [],
+    files: [],
+    syncedIds: new Set(),
+    started: false,
+    busy: false,
+    error: "",
+  };
+}
+
 const NAV_LABELS: Record<NavTab, string> = {
   connection: "Connection",
   send: "Send",
@@ -174,6 +215,12 @@ const NAV_LABELS: Record<NavTab, string> = {
 };
 
 let toastSeq = 0;
+
+const DRIVE_FOLDER_MIME = "application/vnd.google-apps.folder";
+
+function isDriveFolder(entry: DriveFileEntry): boolean {
+  return entry.mimeType === DRIVE_FOLDER_MIME;
+}
 
 export default function App() {
   const [identity, setIdentity] = useState<StoredDeviceKeys | null>(null);
@@ -213,6 +260,9 @@ export default function App() {
   const [folderSyncLast, setFolderSyncLast] = useState("");
   const [driveSyncStatus, setDriveSyncStatus] = useState("off");
   const [driveSyncLast, setDriveSyncLast] = useState("");
+  const [driveBrowser, setDriveBrowser] =
+    useState<DriveBrowser>(emptyDriveBrowser);
+  const driveLoadSeqRef = useRef(0);
   const [notes, setNotes] = useState<SyncNote[]>(() => loadNotes());
   const [secrets, setSecrets] = useState<StoredSecret[]>(() => loadSecrets());
   const [vaultUnlocked, setVaultUnlocked] = useState(false);
@@ -976,6 +1026,162 @@ export default function App() {
       log(`gws probe error: ${probe.detail}`);
     }
   }, [log, toast]);
+
+  /**
+   * Load one Drive listing page. `crumbs` is the folder path (last = current).
+   * Overlapping calls are dropped so a slow response cannot overwrite a newer
+   * one (folder drill-down and page flips race otherwise).
+   */
+  const loadDrivePage = useCallback(
+    async (
+      crumbs: DriveBrowser["crumbs"],
+      token: string | undefined,
+      tokenStack: Array<string | undefined>,
+    ) => {
+      const seq = ++driveLoadSeqRef.current;
+      const folderId =
+        crumbs.length > 0 ? crumbs[crumbs.length - 1].id : undefined;
+      setDriveBrowser((prev) => ({ ...prev, busy: true, error: "" }));
+      const result = await listDriveFiles({
+        folderId,
+        pageSize: DRIVE_PAGE_SIZE_DEFAULT,
+        pageToken: token,
+      });
+      if (seq !== driveLoadSeqRef.current) return;
+      if (!result.ok) {
+        setDriveBrowser((prev) => ({
+          ...prev,
+          busy: false,
+          error: result.detail,
+        }));
+        log(`drive list: ${result.detail}`);
+        toast(result.detail.slice(0, 120), "err");
+        return;
+      }
+      const syncedIds = new Set<string>();
+      for (const entry of result.files) {
+        if (hasDriveFileId(driveSyncLedgerRef.current, entry.id)) {
+          syncedIds.add(entry.id);
+        }
+      }
+      setDriveBrowser({
+        crumbs,
+        ...(token ? { token } : {}),
+        tokenStack,
+        files: result.files,
+        syncedIds,
+        ...(result.nextPageToken ? { nextToken: result.nextPageToken } : {}),
+        started: true,
+        busy: false,
+        error: "",
+      });
+      log(`drive list ${folderId ?? "root"}: ${result.files.length} item(s)`);
+    },
+    [log, toast],
+  );
+
+  const onOpenDriveBrowser = useCallback(() => {
+    const raw = settingsRef.current.driveSyncFolderId.trim();
+    const folderId = normalizeDriveFolderId(raw);
+    if (raw && !folderId) {
+      toast("Invalid Drive folder id — showing My Drive root", "err");
+      log(`drive folder id invalid: ${raw.slice(0, 60)}`);
+      void loadDrivePage([], undefined, []);
+      return;
+    }
+    void loadDrivePage(
+      folderId ? [{ id: folderId, name: "sync folder" }] : [],
+      undefined,
+      [],
+    );
+  }, [loadDrivePage, log, toast]);
+
+  const onDriveRoot = useCallback(() => {
+    void loadDrivePage([], undefined, []);
+  }, [loadDrivePage]);
+
+  const onRefreshDriveBrowser = useCallback(() => {
+    void loadDrivePage(
+      driveBrowser.crumbs,
+      driveBrowser.token,
+      driveBrowser.tokenStack,
+    );
+  }, [
+    driveBrowser.crumbs,
+    driveBrowser.token,
+    driveBrowser.tokenStack,
+    loadDrivePage,
+  ]);
+
+  const onDriveListOrRefresh = useCallback(() => {
+    if (driveBrowser.started) {
+      onRefreshDriveBrowser();
+      return;
+    }
+    onOpenDriveBrowser();
+  }, [driveBrowser.started, onOpenDriveBrowser, onRefreshDriveBrowser]);
+
+  const onDriveUp = useCallback(() => {
+    void loadDrivePage(driveBrowser.crumbs.slice(0, -1), undefined, []);
+  }, [driveBrowser.crumbs, loadDrivePage]);
+
+  const onDriveEnter = useCallback(
+    (entry: DriveFileEntry) => {
+      void loadDrivePage(
+        [...driveBrowser.crumbs, { id: entry.id, name: entry.name }],
+        undefined,
+        [],
+      );
+    },
+    [driveBrowser.crumbs, loadDrivePage],
+  );
+
+  const onDriveNewer = useCallback(() => {
+    if (driveBrowser.tokenStack.length === 0) return;
+    const stack = driveBrowser.tokenStack.slice(0, -1);
+    const token = driveBrowser.tokenStack[driveBrowser.tokenStack.length - 1];
+    void loadDrivePage(driveBrowser.crumbs, token, stack);
+  }, [driveBrowser.crumbs, driveBrowser.tokenStack, loadDrivePage]);
+
+  const onDriveOlder = useCallback(() => {
+    if (!driveBrowser.nextToken) return;
+    void loadDrivePage(driveBrowser.crumbs, driveBrowser.nextToken, [
+      ...driveBrowser.tokenStack,
+      driveBrowser.token,
+    ]);
+  }, [
+    driveBrowser.crumbs,
+    driveBrowser.nextToken,
+    driveBrowser.token,
+    driveBrowser.tokenStack,
+    loadDrivePage,
+  ]);
+
+  const onOpenDriveEntry = useCallback(
+    async (entry: DriveFileEntry) => {
+      try {
+        await openDriveFile(entry.id);
+        log(`opened drive file ${entry.name}`);
+      } catch (e) {
+        log(`open drive file failed: ${String(e)}`);
+        toast("Could not open in browser", "err");
+      }
+    },
+    [log, toast],
+  );
+
+  const onUseDriveFolderAsSync = useCallback(() => {
+    const current = driveBrowser.crumbs[driveBrowser.crumbs.length - 1];
+    const next = saveSettings({ driveSyncFolderId: current?.id ?? "" });
+    setSettings(next);
+    log(`drive sync folder → ${current?.id || "My Drive root"}`);
+    toast(
+      current?.id
+        ? "Sync folder set to this Drive folder"
+        : "Sync folder = My Drive root",
+      "ok",
+    );
+  }, [driveBrowser.crumbs, log, toast]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1824,8 +2030,14 @@ export default function App() {
                 value={settings.driveSyncFolderId}
                 onChange={(e) => {
                   const next = saveSettings({
-                    driveSyncFolderId: e.target.value.trim(),
+                    driveSyncFolderId: e.target.value,
                   });
+                  setSettings(next);
+                }}
+                onBlur={(e) => {
+                  // Accept a pasted Drive URL; keep free-text entry as-is.
+                  const id = normalizeDriveFolderId(e.target.value);
+                  const next = saveSettings({ driveSyncFolderId: id });
                   setSettings(next);
                 }}
                 placeholder="Leave empty for My Drive root"
@@ -1857,6 +2069,116 @@ export default function App() {
               Requires <code>gws</code> on PATH and{" "}
               <code>gws auth login -s drive</code>. Uses the same sync folder as
               phone sync; either sink can run alone or together.
+            </p>
+            <hr className="divider" />
+            <h3>Drive files</h3>
+            <p className="muted small">
+              Read-only listing of My Drive via{" "}
+              <code>gws drive files list</code>.{" "}
+              {driveBrowser.crumbs.length > 0
+                ? `In: ${driveBrowser.crumbs[driveBrowser.crumbs.length - 1].name}`
+                : "My Drive root"}
+            </p>
+            <div className="row">
+              <button
+                type="button"
+                className="ghost"
+                disabled={driveBrowser.busy}
+                onClick={onDriveListOrRefresh}
+              >
+                {driveBrowser.busy ? "Loading…" : "List / refresh"}
+              </button>
+              <button
+                type="button"
+                className="ghost"
+                disabled={driveBrowser.busy || driveBrowser.crumbs.length === 0}
+                onClick={onDriveUp}
+              >
+                Up
+              </button>
+              <button
+                type="button"
+                className="ghost"
+                disabled={driveBrowser.busy}
+                onClick={onDriveRoot}
+              >
+                Root
+              </button>
+              {driveBrowser.tokenStack.length > 0 ? (
+                <button
+                  type="button"
+                  className="ghost"
+                  disabled={driveBrowser.busy}
+                  onClick={onDriveNewer}
+                >
+                  Newer
+                </button>
+              ) : null}
+              {driveBrowser.nextToken ? (
+                <button
+                  type="button"
+                  className="ghost"
+                  disabled={driveBrowser.busy}
+                  onClick={onDriveOlder}
+                >
+                  Older
+                </button>
+              ) : null}
+              <button
+                type="button"
+                className="ghost"
+                disabled={driveBrowser.busy}
+                onClick={onUseDriveFolderAsSync}
+              >
+                Use as sync folder
+              </button>
+            </div>
+            {driveBrowser.error ? (
+              <p className="muted small">Error: {driveBrowser.error}</p>
+            ) : null}
+            {driveBrowser.files.length > 0 ? (
+              <ul className="history" aria-busy={driveBrowser.busy}>
+                {driveBrowser.files.map((entry) => {
+                  const folder = isDriveFolder(entry);
+                  const meta = [
+                    folder ? "folder" : formatDriveSize(entry.size),
+                    formatDriveTime(entry.modifiedTime),
+                    driveBrowser.syncedIds.has(entry.id) ? "synced" : "",
+                  ]
+                    .filter(Boolean)
+                    .join(" · ");
+                  return (
+                    <li key={entry.id}>
+                      <button
+                        type="button"
+                        className="linkish"
+                        title={entry.id}
+                        disabled={driveBrowser.busy}
+                        onClick={() =>
+                          folder
+                            ? onDriveEnter(entry)
+                            : void onOpenDriveEntry(entry)
+                        }
+                      >
+                        {entry.name}
+                      </button>
+                      <span className="muted small drive-meta">{meta}</span>
+                    </li>
+                  );
+                })}
+              </ul>
+            ) : (
+              <p className="muted small">
+                {driveBrowser.busy
+                  ? "Fetching…"
+                  : driveBrowser.started
+                    ? "This folder is empty."
+                    : "No files listed yet — press “List / refresh”."}
+              </p>
+            )}
+            <p className="muted small">
+              Read-only: opens files in the Drive web UI. Folder rows drill in;
+              page size {DRIVE_PAGE_SIZE_DEFAULT}.
             </p>
             <hr className="divider" />
             <h3>Notes</h3>
@@ -2664,9 +2986,13 @@ export default function App() {
                   value={settings.driveSyncFolderId}
                   onChange={(e) => {
                     const next = saveSettings({
-                      driveSyncFolderId: e.target.value.trim(),
+                      driveSyncFolderId: e.target.value,
                     });
                     setSettings(next);
+                  }}
+                  onBlur={(e) => {
+                    const id = normalizeDriveFolderId(e.target.value);
+                    setSettings(saveSettings({ driveSyncFolderId: id }));
                   }}
                   placeholder="Empty = My Drive root"
                 />

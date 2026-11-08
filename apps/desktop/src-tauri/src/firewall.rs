@@ -3,36 +3,44 @@
 
 use std::process::Command;
 
+use crate::shell::hide_child_console;
+
 pub const RULE_NAME: &str = "involvex Sync LAN";
+
+fn netsh(args: &[String]) -> Command {
+    let mut cmd = Command::new("netsh");
+    cmd.args(args);
+    cmd.stdin(std::process::Stdio::null());
+    hide_child_console(&mut cmd);
+    cmd
+}
 
 pub fn ensure_private_inbound_rule(port: u16) -> Result<String, String> {
     // Remove stale rule first (ignore failure).
-    let _ = Command::new("netsh")
-        .args([
-            "advfirewall",
-            "firewall",
-            "delete",
-            "rule",
-            &format!("name={RULE_NAME}"),
-        ])
-        .output();
+    let _ = netsh(&[
+        "advfirewall".into(),
+        "firewall".into(),
+        "delete".into(),
+        "rule".into(),
+        format!("name={RULE_NAME}"),
+    ])
+    .output();
 
-    let output = Command::new("netsh")
-        .args([
-            "advfirewall",
-            "firewall",
-            "add",
-            "rule",
-            &format!("name={RULE_NAME}"),
-            "dir=in",
-            "action=allow",
-            "protocol=TCP",
-            &format!("localport={port}"),
-            "profile=private",
-            "enable=yes",
-        ])
-        .output()
-        .map_err(|e| format!("netsh failed to start: {e}"))?;
+    let output = netsh(&[
+        "advfirewall".into(),
+        "firewall".into(),
+        "add".into(),
+        "rule".into(),
+        format!("name={RULE_NAME}"),
+        "dir=in".into(),
+        "action=allow".into(),
+        "protocol=TCP".into(),
+        format!("localport={port}"),
+        "profile=private".into(),
+        "enable=yes".into(),
+    ])
+    .output()
+    .map_err(|e| format!("netsh failed to start: {e}"))?;
 
     if output.status.success() {
         Ok(format!(

@@ -103,6 +103,15 @@ InVx Termux package: `com.involvex.termux_app`.
 - **Folder sync (PC → Google Drive):** same watcher; opt-in second sink shells
   out to `gws drive +upload` (credentials from `gws auth login`). Separate
   Drive ledger in localStorage. Does not require the phone to be Live.
+- **Drive browsing (read-only):** the desktop Files tab lists My Drive with
+  `gws drive files list` (50 per page, `'root' in parents`, newest first).
+  Folder rows drill down, files open in the Drive web UI via the URL
+  allowlist, and "Use as sync folder" writes the folder id into settings.
+  No uploads/deletes from the browser; each list action is one `gws` spawn.
+- All desktop shell-outs (`gws`, `adb`, `pwsh`, `netsh`) are spawned with
+  `CREATE_NO_WINDOW` so release builds (GUI subsystem, no console) never
+  flash a console window. Argv-only, no shell; child pipes are drained on
+  reader threads so large JSON pages cannot deadlock the capture.
 - **Phone → Drive:** Expo app uses Drive REST + OAuth (`drive.file`). Dedicated
   Worker `workers/oauth-token-exchange` (`involvex-sync-oauth`): `GET /oauth`
   HTTPS bridge → `involvex-sync://oauth`; `POST /token` exchanges code+PKCE with

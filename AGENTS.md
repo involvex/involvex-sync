@@ -4,16 +4,16 @@ End-to-end encrypted link, clipboard, file, and command sharing between **Androi
 
 ## Repository layout
 
-| Path | Role |
-| --- | --- |
-| [`packages/protocol`](packages/protocol) | Shared wire protocol: frames, Noble crypto, URL allowlist, loop guard |
-| [`apps/desktop`](apps/desktop) | Tauri 2 tray app (Windows) — LAN WebSocket listener, UI, loopback control API |
-| [`apps/mobile`](apps/mobile) | Expo development build (Android) — share intent, notifications, IME/a11y integrations |
-| [`apps/cli`](apps/cli) | `isync` CLI — talks to the running desktop app over loopback |
-| [`workers/relay`](workers/relay) | Hibernating Durable Object ciphertext mailbox (`sync.involvex.workers.dev`) |
-| [`workers/oauth-token-exchange`](workers/oauth-token-exchange) | OAuth redirect bridge + token exchange (`involvex-sync-oauth`) |
-| [`docs/architecture.md`](docs/architecture.md) | Architecture, trust model, transport, platform constraints |
-| [`docs/protocol.md`](docs/protocol.md) | Wire protocol, payload types, signing, URL allowlist |
+| Path                                                           | Role                                                                                  |
+| -------------------------------------------------------------- | ------------------------------------------------------------------------------------- |
+| [`packages/protocol`](packages/protocol)                       | Shared wire protocol: frames, Noble crypto, URL allowlist, loop guard                 |
+| [`apps/desktop`](apps/desktop)                                 | Tauri 2 tray app (Windows) — LAN WebSocket listener, UI, loopback control API         |
+| [`apps/mobile`](apps/mobile)                                   | Expo development build (Android) — share intent, notifications, IME/a11y integrations |
+| [`apps/cli`](apps/cli)                                         | `isync` CLI — talks to the running desktop app over loopback                          |
+| [`workers/relay`](workers/relay)                               | Hibernating Durable Object ciphertext mailbox (`sync.involvex.workers.dev`)           |
+| [`workers/oauth-token-exchange`](workers/oauth-token-exchange) | OAuth redirect bridge + token exchange (`involvex-sync-oauth`)                        |
+| [`docs/architecture.md`](docs/architecture.md)                 | Architecture, trust model, transport, platform constraints                            |
+| [`docs/protocol.md`](docs/protocol.md)                         | Wire protocol, payload types, signing, URL allowlist                                  |
 
 > Mobile-specific agent instructions live in [`apps/mobile/AGENTS.md`](apps/mobile/AGENTS.md).
 
@@ -26,7 +26,7 @@ Run from the repository root unless noted. This project uses **Bun workspaces** 
 ```bash
 bun install
 bun run build        # build @involvex/protocol
-bun test             # protocol tests (@involvex/protocol)
+bun test             # tests: @involvex/protocol + desktop services (gwsDrive)
 bun check            # typecheck (Bun native) across protocol, desktop, mobile, cli, workers
 bun lint             # Bun native linter
 bun fmt              # Bun native formatter
