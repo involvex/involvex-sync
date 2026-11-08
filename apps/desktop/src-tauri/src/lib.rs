@@ -89,6 +89,27 @@ fn clear_peer() -> Result<(), String> {
 }
 
 #[tauri::command]
+fn load_vault_key() -> Result<Option<String>, String> {
+    keys::load_vault_key().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn save_vault_key(key_hex: String) -> Result<(), String> {
+    keys::save_vault_key(&key_hex).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn clear_vault_key() -> Result<(), String> {
+    keys::clear_vault_key().map_err(|e| e.to_string())
+}
+
+/// UI already asked; Credential Manager is bound to the signed-in Windows user.
+#[tauri::command]
+fn confirm_vault_unlock() -> Result<bool, String> {
+    Ok(true)
+}
+
+#[tauri::command]
 fn start_mdns(
     state: State<'_, AppState>,
     device_name: String,
@@ -343,6 +364,10 @@ pub fn run() {
             load_peer,
             save_peer,
             clear_peer,
+            load_vault_key,
+            save_vault_key,
+            clear_vault_key,
+            confirm_vault_unlock,
             start_mdns,
             ensure_firewall_rule,
             save_incoming_file,

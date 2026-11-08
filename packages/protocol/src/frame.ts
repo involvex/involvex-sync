@@ -16,13 +16,17 @@ import type {
   MessageBody,
   MessagePayload,
   RemoteShell,
+  SecretKind,
   WireFrame,
 } from "./types";
 import {
   KEYBOARD_KEY_IDS,
   MAX_KEYBOARD_TEXT_CHARS,
+  MAX_NOTE_BODY_CHARS,
+  MAX_NOTE_TITLE_CHARS,
   MAX_REMOTE_COMMAND_CHARS,
   MAX_REMOTE_OUTPUT_CHARS,
+  MAX_SECRET_LABEL_CHARS,
   PROTOCOL_VERSION,
 } from "./types";
 import { parseAllowedUrl } from "./url";
@@ -373,6 +377,100 @@ export function remoteCommandResultBody(
       stdout: result.stdout.slice(0, MAX_REMOTE_OUTPUT_CHARS),
       stderr: result.stderr.slice(0, MAX_REMOTE_OUTPUT_CHARS),
     },
+    to,
+  );
+}
+
+export function noteUpsertBody(
+  from: string,
+  note: { id: string; title: string; body: string; updatedAt: number },
+  to?: string,
+): MessageBody | null {
+  if (!note.id || !Number.isFinite(note.updatedAt)) return null;
+  return createMessageBody(
+    from,
+    {
+      type: "note_upsert",
+      id: note.id,
+      title: note.title.slice(0, MAX_NOTE_TITLE_CHARS),
+      body: note.body.slice(0, MAX_NOTE_BODY_CHARS),
+      updatedAt: note.updatedAt,
+    },
+    to,
+  );
+}
+
+export function noteDeleteBody(
+  from: string,
+  note: { id: string; updatedAt: number },
+  to?: string,
+): MessageBody | null {
+  if (!note.id || !Number.isFinite(note.updatedAt)) return null;
+  return createMessageBody(
+    from,
+    { type: "note_delete", id: note.id, updatedAt: note.updatedAt },
+    to,
+  );
+}
+
+export function secretUpsertBody(
+  from: string,
+  secret: {
+    id: string;
+    updatedAt: number;
+    ciphertext: string;
+    nonce: string;
+    meta: { label: string; kind: SecretKind };
+  },
+  to?: string,
+): MessageBody | null {
+  if (
+    !secret.id ||
+    !secret.ciphertext ||
+    !secret.nonce ||
+    !Number.isFinite(secret.updatedAt)
+  ) {
+    return null;
+  }
+  return createMessageBody(
+    from,
+    {
+      type: "secret_upsert",
+      id: secret.id,
+      updatedAt: secret.updatedAt,
+      ciphertext: secret.ciphertext,
+      nonce: secret.nonce,
+      meta: {
+        label: secret.meta.label.slice(0, MAX_SECRET_LABEL_CHARS),
+        kind: secret.meta.kind,
+      },
+    },
+    to,
+  );
+}
+
+export function secretDeleteBody(
+  from: string,
+  secret: { id: string; updatedAt: number },
+  to?: string,
+): MessageBody | null {
+  if (!secret.id || !Number.isFinite(secret.updatedAt)) return null;
+  return createMessageBody(
+    from,
+    { type: "secret_delete", id: secret.id, updatedAt: secret.updatedAt },
+    to,
+  );
+}
+
+export function vaultKeyShareBody(
+  from: string,
+  keyHex: string,
+  to?: string,
+): MessageBody | null {
+  if (!/^[0-9a-fA-F]{64}$/.test(keyHex)) return null;
+  return createMessageBody(
+    from,
+    { type: "vault_key_share", keyHex: keyHex.toLowerCase() },
     to,
   );
 }

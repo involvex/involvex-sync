@@ -1,6 +1,7 @@
 import { CameraView } from "expo-camera";
+import * as SplashScreen from "expo-splash-screen";
 import { StatusBar } from "expo-status-bar";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Modal, Pressable, Text, View } from "react-native";
 import { SafeAreaProvider, SafeAreaView } from "react-native-safe-area-context";
 import { TabBar, type AppTab } from "./src/components/TabBar";
@@ -13,7 +14,7 @@ import { ThemeProvider, useTheme } from "./src/themeContext";
 import { makeStyles } from "./src/ui/styles";
 
 function AppShell() {
-  const { colors, resolved } = useTheme();
+  const { colors, resolved, ready: themeReady } = useTheme();
   const styles = makeStyles(colors);
   const {
     finding,
@@ -22,8 +23,16 @@ function AppShell() {
     setScanOpen,
     cameraPermission,
     onScanPayload,
+    hydrated,
   } = useSession();
   const [tab, setTab] = useState<AppTab>("home");
+
+  useEffect(() => {
+    if (!themeReady || !hydrated) return;
+    void SplashScreen.hideAsync().catch(() => {
+      /* already hidden */
+    });
+  }, [themeReady, hydrated]);
 
   return (
     <SafeAreaView style={styles.root} edges={["top", "left", "right"]}>

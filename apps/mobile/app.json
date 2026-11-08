@@ -16,6 +16,7 @@
       "bundleIdentifier": "app.involvex.sync"
     },
     "android": {
+      "softwareKeyboardLayoutMode": "resize",
       "adaptiveIcon": {
         "backgroundColor": "#0b1220",
         "foregroundImage": "./assets/android-icon-foreground.png",
@@ -38,22 +39,42 @@
           "action": "SEND",
           "category": ["DEFAULT"],
           "data": [
-            { "mimeType": "text/*" },
-            { "mimeType": "image/*" },
-            { "mimeType": "application/pdf" },
-            { "mimeType": "application/*" },
-            { "mimeType": "*/*" }
+            {
+              "mimeType": "text/*"
+            },
+            {
+              "mimeType": "image/*"
+            },
+            {
+              "mimeType": "application/pdf"
+            },
+            {
+              "mimeType": "application/*"
+            },
+            {
+              "mimeType": "*/*"
+            }
           ]
         },
         {
           "action": "SEND_MULTIPLE",
           "category": ["DEFAULT"],
           "data": [
-            { "mimeType": "text/*" },
-            { "mimeType": "image/*" },
-            { "mimeType": "application/pdf" },
-            { "mimeType": "application/*" },
-            { "mimeType": "*/*" }
+            {
+              "mimeType": "text/*"
+            },
+            {
+              "mimeType": "image/*"
+            },
+            {
+              "mimeType": "application/pdf"
+            },
+            {
+              "mimeType": "application/*"
+            },
+            {
+              "mimeType": "*/*"
+            }
           ]
         }
       ]
@@ -83,6 +104,13 @@
           "cameraPermission": "Scan the PC pairing QR code",
           "recordAudioAndroid": false,
           "barcodeScannerEnabled": true
+        }
+      ],
+      "expo-splash-screen",
+      [
+        "expo-local-authentication",
+        {
+          "faceIDPermission": "Unlock Secrets with Face ID"
         }
       ]
     ],

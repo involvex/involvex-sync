@@ -5,6 +5,7 @@ use thiserror::Error;
 const SERVICE: &str = "app.involvex.sync";
 const ACCOUNT: &str = "device-keys";
 const PEER_ACCOUNT: &str = "paired-peer";
+const VAULT_ACCOUNT: &str = "vault-key";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -78,6 +79,30 @@ pub fn save_peer(peer: &StoredPeer) -> Result<(), KeyError> {
 
 pub fn clear_peer() -> Result<(), KeyError> {
     let e = entry(PEER_ACCOUNT)?;
+    match e.delete_credential() {
+        Ok(()) => Ok(()),
+        Err(keyring::Error::NoEntry) => Ok(()),
+        Err(err) => Err(KeyError::Keyring(err.to_string())),
+    }
+}
+
+pub fn load_vault_key() -> Result<Option<String>, KeyError> {
+    let e = entry(VAULT_ACCOUNT)?;
+    match e.get_password() {
+        Ok(raw) => Ok(Some(raw)),
+        Err(keyring::Error::NoEntry) => Ok(None),
+        Err(err) => Err(KeyError::Keyring(err.to_string())),
+    }
+}
+
+pub fn save_vault_key(key_hex: &str) -> Result<(), KeyError> {
+    let e = entry(VAULT_ACCOUNT)?;
+    e.set_password(key_hex)
+        .map_err(|err| KeyError::Keyring(err.to_string()))
+}
+
+pub fn clear_vault_key() -> Result<(), KeyError> {
+    let e = entry(VAULT_ACCOUNT)?;
     match e.delete_credential() {
         Ok(()) => Ok(()),
         Err(keyring::Error::NoEntry) => Ok(()),

@@ -12,14 +12,11 @@ import {
   openNotifyListenerSettings,
   setNotifyMirrorEnabled,
 } from "../../modules/invx-notify/src";
+import { Pressable, Switch, Text, TextInput, View } from "react-native";
 import {
-  Pressable,
-  ScrollView,
-  Switch,
-  Text,
-  TextInput,
-  View,
-} from "react-native";
+  KeyboardScreen,
+  useScrollInputOnFocus,
+} from "../components/KeyboardScreen";
 import { saveAppSettings } from "../appSettings";
 import { useSession } from "../sessionContext";
 import type { ThemePreference } from "../theme";
@@ -35,6 +32,7 @@ const THEME_OPTIONS: { id: ThemePreference; label: string }[] = [
 export function SettingsScreen() {
   const { colors, preference, setPreference } = useTheme();
   const styles = makeStyles(colors);
+  const { onFocus: scrollOnFocus } = useScrollInputOnFocus();
   const {
     appSettings,
     setAppSettings,
@@ -65,10 +63,7 @@ export function SettingsScreen() {
   } = useSession();
 
   return (
-    <ScrollView
-      contentContainerStyle={styles.content}
-      keyboardShouldPersistTaps="handled"
-    >
+    <KeyboardScreen contentContainerStyle={styles.content}>
       <View style={styles.card}>
         <Text style={styles.h2}>Theme</Text>
         <Text style={styles.muted}>Appearance for this app.</Text>
@@ -329,6 +324,7 @@ export function SettingsScreen() {
           placeholderTextColor={colors.placeholder}
           value={pwshCmd}
           onChangeText={setPwshCmd}
+          onFocus={scrollOnFocus}
         />
         <Pressable style={styles.btn} onPress={runPwshOnPc}>
           <Text style={styles.btnText}>Run on PC</Text>
@@ -362,6 +358,6 @@ export function SettingsScreen() {
           <Text style={styles.muted}>No events yet.</Text>
         )}
       </View>
-    </ScrollView>
+    </KeyboardScreen>
   );
 }

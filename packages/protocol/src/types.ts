@@ -35,7 +35,12 @@ export type MessageType =
   | "keyboard_status"
   | "find_phone"
   | "remote_command"
-  | "remote_command_result";
+  | "remote_command_result"
+  | "note_upsert"
+  | "note_delete"
+  | "secret_upsert"
+  | "secret_delete"
+  | "vault_key_share";
 
 /** Max decoded file size for legacy single-shot base64 transfer (2 MiB). */
 export const MAX_FILE_TRANSFER_BYTES = 2 * 1024 * 1024;
@@ -227,6 +232,57 @@ export type RemoteCommandResultPayload = {
   stderr: string;
 };
 
+/** Soft caps for synced notes / secrets. */
+export const MAX_NOTES = 100;
+export const MAX_SECRETS = 100;
+export const MAX_NOTE_TITLE_CHARS = 200;
+export const MAX_NOTE_BODY_CHARS = 8_000;
+export const MAX_SECRET_LABEL_CHARS = 120;
+export const MAX_SECRET_VALUE_CHARS = 8_000;
+
+export type NoteUpsertPayload = {
+  type: "note_upsert";
+  id: string;
+  title: string;
+  body: string;
+  updatedAt: number;
+};
+
+export type NoteDeletePayload = {
+  type: "note_delete";
+  id: string;
+  updatedAt: number;
+};
+
+export type SecretKind = "api_key" | "password" | "token" | "text";
+
+export type SecretUpsertPayload = {
+  type: "secret_upsert";
+  id: string;
+  updatedAt: number;
+  /** Hex ciphertext under the vault key. */
+  ciphertext: string;
+  /** Hex nonce for vault AEAD. */
+  nonce: string;
+  meta: {
+    label: string;
+    kind: SecretKind;
+  };
+};
+
+export type SecretDeletePayload = {
+  type: "secret_delete";
+  id: string;
+  updatedAt: number;
+};
+
+/** One-time vault key bootstrap to the paired peer (transport-sealed). */
+export type VaultKeySharePayload = {
+  type: "vault_key_share";
+  /** Hex-encoded 32-byte vault key. */
+  keyHex: string;
+};
+
 export type MessagePayload =
   | ShareUrlPayload
   | ClipboardUpdatePayload
@@ -246,7 +302,12 @@ export type MessagePayload =
   | KeyboardStatusPayload
   | FindPhonePayload
   | RemoteCommandPayload
-  | RemoteCommandResultPayload;
+  | RemoteCommandResultPayload
+  | NoteUpsertPayload
+  | NoteDeletePayload
+  | SecretUpsertPayload
+  | SecretDeletePayload
+  | VaultKeySharePayload;
 
 /** Cleartext body sealed inside the encrypted frame. */
 export type MessageBody = {

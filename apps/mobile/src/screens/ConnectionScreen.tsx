@@ -1,5 +1,9 @@
 import { DEFAULT_PORT } from "@involvex/protocol";
-import { Pressable, ScrollView, Text, TextInput, View } from "react-native";
+import { Pressable, Text, TextInput, View } from "react-native";
+import {
+  KeyboardScreen,
+  useScrollInputOnFocus,
+} from "../components/KeyboardScreen";
 import { useSession } from "../sessionContext";
 import { useTheme } from "../themeContext";
 import { type TransportMode } from "../transport";
@@ -8,6 +12,7 @@ import { makeStyles } from "../ui/styles";
 export function ConnectionScreen() {
   const { colors } = useTheme();
   const styles = makeStyles(colors);
+  const { onFocus: scrollOnFocus } = useScrollInputOnFocus();
   const {
     mode,
     setMode,
@@ -40,10 +45,7 @@ export function ConnectionScreen() {
   } = useSession();
 
   return (
-    <ScrollView
-      contentContainerStyle={styles.content}
-      keyboardShouldPersistTaps="handled"
-    >
+    <KeyboardScreen contentContainerStyle={styles.content}>
       <View style={styles.card}>
         <Text style={styles.h2}>Connection</Text>
         <Text style={styles.muted}>Host and mode are saved on this phone.</Text>
@@ -81,6 +83,7 @@ export function ConnectionScreen() {
                   persistTransport({ host: value });
                 }}
                 onEndEditing={() => persistTransport({ host })}
+                onFocus={scrollOnFocus}
               />
             </View>
             <View style={styles.fieldPort}>
@@ -99,6 +102,7 @@ export function ConnectionScreen() {
                     port: Number(port) || DEFAULT_PORT,
                   })
                 }
+                onFocus={scrollOnFocus}
               />
             </View>
           </View>
@@ -240,6 +244,7 @@ export function ConnectionScreen() {
               placeholderTextColor={colors.placeholder}
               value={pairPaste}
               onChangeText={setPairPaste}
+              onFocus={scrollOnFocus}
             />
             <Pressable style={styles.btn} onPress={() => void onPair()}>
               <Text style={styles.btnText}>Pair from JSON</Text>
@@ -247,6 +252,6 @@ export function ConnectionScreen() {
           </>
         ) : null}
       </View>
-    </ScrollView>
+    </KeyboardScreen>
   );
 }

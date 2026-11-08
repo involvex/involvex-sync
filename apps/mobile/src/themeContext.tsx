@@ -20,6 +20,7 @@ type ThemeContextValue = {
   preference: ThemePreference;
   resolved: "light" | "dark";
   colors: ThemeColors;
+  ready: boolean;
   setPreference: (next: ThemePreference) => Promise<void>;
 };
 
@@ -29,10 +30,12 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   const system = useColorScheme();
   const systemDark = system !== "light";
   const [preference, setPreferenceState] = useState<ThemePreference>("system");
+  const [ready, setReady] = useState(false);
 
   useEffect(() => {
     void loadAppSettings().then((s) => {
       setPreferenceState(s.theme);
+      setReady(true);
     });
   }, []);
 
@@ -45,8 +48,8 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   const colors = useMemo(() => colorsForMode(resolved), [resolved]);
 
   const value = useMemo(
-    () => ({ preference, resolved, colors, setPreference }),
-    [preference, resolved, colors, setPreference],
+    () => ({ preference, resolved, colors, ready, setPreference }),
+    [preference, resolved, colors, ready, setPreference],
   );
 
   return (

@@ -95,10 +95,39 @@ import {
   saveAppSettings,
   type MobileAppSettings,
 } from "./appSettings";
+import {
+  applyPeerNoteDelete,
+  applyPeerNoteUpsert,
+  clearPendingNoteOps,
+  deleteLocalNote,
+  loadNotes,
+  loadPendingNoteOps,
+  upsertLocalNote,
+  type SyncNote,
+} from "./notesStore";
+import {
+  acceptSharedVaultKey,
+  applyPeerSecretDelete,
+  applyPeerSecretUpsert,
+  clearPendingSecretOps,
+  deleteLocalSecret,
+  ensureVaultKey,
+  hasVaultKey,
+  isVaultUnlocked,
+  loadPendingSecretOps,
+  loadSecrets,
+  lockVault,
+  queueVaultKeyShare,
+  revealSecretValue,
+  unlockVault,
+  upsertLocalSecret,
+  type StoredSecret,
+} from "./secretsStore";
 import { loadTransportPrefs, saveTransportPrefs } from "./settings";
 import { MobileSession } from "./session";
 import { allowlistedRunSpec } from "./termux";
 import { type TransportMode, defaultTransport } from "./transport";
+import type { SecretKind } from "@involvex/protocol";
 
 Notifications.setNotificationHandler({
   handleNotification: () =>
@@ -212,6 +241,27 @@ export type SessionContextValue = {
   a11yGrantedRef: MutableRefObject<boolean>;
   startMdnsBrowse: typeof startMdnsBrowse;
   stopMdnsBrowse: typeof stopMdnsBrowse;
+  hydrated: boolean;
+  notes: SyncNote[];
+  secrets: StoredSecret[];
+  vaultUnlocked: boolean;
+  saveNote: (input: {
+    id?: string;
+    title: string;
+    body: string;
+  }) => Promise<void>;
+  removeNote: (id: string) => Promise<void>;
+  unlockSecrets: () => Promise<boolean>;
+  lockSecrets: () => void;
+  enableSecretsVault: () => Promise<boolean>;
+  saveSecret: (input: {
+    id?: string;
+    label: string;
+    kind: SecretKind;
+    value: string;
+  }) => Promise<void>;
+  removeSecret: (id: string) => Promise<void>;
+  revealSecret: (secret: StoredSecret) => Promise<string>;
 };
 
 const SessionContext = createContext<SessionContextValue | null>(null);
@@ -261,6 +311,10 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   });
   const [pwshCmd, setPwshCmd] = useState("");
   const [cmdOutput, setCmdOutput] = useState("");
+  const [hydrated, setHydrated] = useState(false);
+  const [notes, setNotes] = useState<SyncNote[]>([]);
+  const [secrets, setSecrets] = useState<StoredSecret[]>([]);
+  const [vaultUnlocked, setVaultUnlocked] = useState(false);
   const sessionRef = useRef<MobileSession | null>(null);
   const imeReceiveRef = useRef(false);
   const imeActiveRef = useRef(false);
@@ -363,6 +417,10 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       setAppSettings(settings);
       await setClipboardAutoEnabled(settings.autoClipboardSync);
       await setClipboardIncludeImages(settings.autoClipboardImages);
+      setNotes(await loadNotes());
+      setSecrets(await loadSecrets());
+      setVaultUnlocked(isVaultUnlocked());
+      setHydrated(true);
     })();
   }, []);
 
@@ -702,6 +760,46 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       onFindPhone: (durationMs) => {
         startFindPhone(durationMs);
       },
+      onNoteUpsert: async (note) => {
+        setNotes(
+          await applyPeerNoteUpsert({
+            id: note.id,
+            title: note.title,
+            body: note.body,
+            updatedAt: note.updatedAt,
+          }),
+        );
+        log("note synced from PC");
+      },
+      onNoteDelete: async (note) => {
+        setNotes(await applyPeerNoteDelete(note.id, note.updatedAt));
+        log("note deleted from PC");
+      },
+      onSecretUpsert: async (secret) => {
+        setSecrets(
+          await applyPeerSecretUpsert({
+            id: secret.id,
+            label: secret.meta.label,
+            kind: secret.meta.kind,
+            updatedAt: secret.updatedAt,
+            nonce: secret.nonce,
+            ciphertext: secret.ciphertext,
+          }),
+        );
+        log("secret synced from PC");
+      },
+      onSecretDelete: async (secret) => {
+        setSecrets(await applyPeerSecretDelete(secret.id, secret.updatedAt));
+        log("secret deleted from PC");
+      },
+      onVaultKeyShare: async (keyHex) => {
+        try {
+          await acceptSharedVaultKey(keyHex);
+          log("vault key received from PC");
+        } catch (e) {
+          log(`vault key share failed: ${String(e)}`);
+        }
+      },
       onPairAccept: async (accept) => {
         if (pairTimerRef.current) {
           clearTimeout(pairTimerRef.current);
@@ -785,6 +883,52 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     startFindPhone,
     pushKeyboardStatus,
   ]);
+
+  const flushNotesAndSecrets = useCallback(async () => {
+    const s = sessionRef.current;
+    if (!s?.isOpen) return;
+    try {
+      const notePending = await loadPendingNoteOps();
+      const noteLeft = [];
+      for (const op of notePending) {
+        try {
+          if (op.op === "upsert") {
+            s.sendNoteUpsert(op.note);
+          } else {
+            s.sendNoteDelete({ id: op.id, updatedAt: op.updatedAt });
+          }
+        } catch {
+          noteLeft.push(op);
+        }
+      }
+      await clearPendingNoteOps(noteLeft);
+
+      const secretPending = await loadPendingSecretOps();
+      const secretLeft = [];
+      for (const op of secretPending) {
+        try {
+          if (op.op === "vault_key_share") {
+            s.sendVaultKeyShare(op.keyHex);
+          } else if (op.op === "upsert") {
+            s.sendSecretUpsert({
+              id: op.secret.id,
+              updatedAt: op.secret.updatedAt,
+              ciphertext: op.secret.ciphertext,
+              nonce: op.secret.nonce,
+              meta: { label: op.secret.label, kind: op.secret.kind },
+            });
+          } else {
+            s.sendSecretDelete({ id: op.id, updatedAt: op.updatedAt });
+          }
+        } catch {
+          secretLeft.push(op);
+        }
+      }
+      await clearPendingSecretOps(secretLeft);
+    } catch (e) {
+      log(`notes/secrets flush failed: ${String(e)}`);
+    }
+  }, [log]);
 
   useEffect(() => {
     if (session && peer) session.setPeer(peer);
@@ -1325,6 +1469,169 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   const connected =
     status.startsWith("connected") || status.includes("connected");
 
+  useEffect(() => {
+    if (connected) void flushNotesAndSecrets();
+  }, [connected, flushNotesAndSecrets]);
+
+  const saveNote = useCallback(
+    async (input: { id?: string; title: string; body: string }) => {
+      const { notes: next, note, pending } = await upsertLocalNote(input);
+      setNotes(next);
+      const s = sessionRef.current;
+      if (s?.isOpen) {
+        try {
+          s.sendNoteUpsert(note);
+          await clearPendingNoteOps(
+            pending.filter(
+              (p) =>
+                !(p.op === "upsert" && p.note.id === note.id) &&
+                !(p.op === "delete" && p.id === note.id),
+            ),
+          );
+        } catch (e) {
+          log(`note sync queued: ${String(e)}`);
+        }
+      }
+    },
+    [log],
+  );
+
+  const removeNote = useCallback(
+    async (id: string) => {
+      const { notes: next, pending } = await deleteLocalNote(id);
+      setNotes(next);
+      const del = pending.find((p) => p.op === "delete" && p.id === id);
+      const s = sessionRef.current;
+      if (s?.isOpen && del && del.op === "delete") {
+        try {
+          s.sendNoteDelete({ id: del.id, updatedAt: del.updatedAt });
+          await clearPendingNoteOps(
+            pending.filter((p) => !(p.op === "delete" && p.id === id)),
+          );
+        } catch (e) {
+          log(`note delete queued: ${String(e)}`);
+        }
+      }
+    },
+    [log],
+  );
+
+  const unlockSecrets = useCallback(async () => {
+    const ok = await unlockVault();
+    setVaultUnlocked(ok && isVaultUnlocked());
+    return ok;
+  }, []);
+
+  const lockSecrets = useCallback(() => {
+    lockVault();
+    setVaultUnlocked(false);
+  }, []);
+
+  const enableSecretsVault = useCallback(async () => {
+    try {
+      const { keyHex, created } = await ensureVaultKey();
+      setVaultUnlocked(true);
+      if (created) {
+        await queueVaultKeyShare(keyHex);
+        const s = sessionRef.current;
+        if (s?.isOpen) {
+          try {
+            s.sendVaultKeyShare(keyHex);
+            const pending = await loadPendingSecretOps();
+            await clearPendingSecretOps(
+              pending.filter((p) => p.op !== "vault_key_share"),
+            );
+          } catch {
+            /* queued */
+          }
+        }
+      }
+      return true;
+    } catch (e) {
+      log(`vault enable failed: ${String(e)}`);
+      return false;
+    }
+  }, [log]);
+
+  const saveSecret = useCallback(
+    async (input: {
+      id?: string;
+      label: string;
+      kind: SecretKind;
+      value: string;
+    }) => {
+      if (!(await hasVaultKey())) {
+        const ok = await enableSecretsVault();
+        if (!ok) throw new Error("vault not ready");
+      } else if (!isVaultUnlocked()) {
+        const ok = await unlockVault();
+        if (!ok) throw new Error("vault locked");
+        setVaultUnlocked(true);
+      }
+      const { secrets: next, secret, pending } = await upsertLocalSecret(input);
+      setSecrets(next);
+      setVaultUnlocked(true);
+      const s = sessionRef.current;
+      if (s?.isOpen) {
+        try {
+          // Share vault key once if peer may not have it yet.
+          const keyPending = pending.find((p) => p.op === "vault_key_share");
+          if (keyPending && keyPending.op === "vault_key_share") {
+            s.sendVaultKeyShare(keyPending.keyHex);
+          }
+          s.sendSecretUpsert({
+            id: secret.id,
+            updatedAt: secret.updatedAt,
+            ciphertext: secret.ciphertext,
+            nonce: secret.nonce,
+            meta: { label: secret.label, kind: secret.kind },
+          });
+          await clearPendingSecretOps(
+            pending.filter((p) =>
+              p.op === "vault_key_share" ||
+              (p.op === "upsert" && p.secret.id === secret.id) ||
+              (p.op === "delete" && p.id === secret.id)
+                ? false
+                : true,
+            ),
+          );
+        } catch (e) {
+          log(`secret sync queued: ${String(e)}`);
+        }
+      }
+    },
+    [enableSecretsVault, log],
+  );
+
+  const removeSecret = useCallback(
+    async (id: string) => {
+      const { secrets: next, pending } = await deleteLocalSecret(id);
+      setSecrets(next);
+      const del = pending.find((p) => p.op === "delete" && p.id === id);
+      const s = sessionRef.current;
+      if (s?.isOpen && del && del.op === "delete") {
+        try {
+          s.sendSecretDelete({ id: del.id, updatedAt: del.updatedAt });
+          await clearPendingSecretOps(
+            pending.filter((p) => !(p.op === "delete" && p.id === id)),
+          );
+        } catch (e) {
+          log(`secret delete queued: ${String(e)}`);
+        }
+      }
+    },
+    [log],
+  );
+
+  const revealSecret = useCallback(async (secret: StoredSecret) => {
+    if (!isVaultUnlocked()) {
+      const ok = await unlockVault();
+      if (!ok) throw new Error("vault locked");
+      setVaultUnlocked(true);
+    }
+    return Promise.resolve(revealSecretValue(secret));
+  }, []);
+
   const value: SessionContextValue = {
     identity,
     peer,
@@ -1397,6 +1704,18 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     a11yGrantedRef,
     startMdnsBrowse,
     stopMdnsBrowse,
+    hydrated,
+    notes,
+    secrets,
+    vaultUnlocked,
+    saveNote,
+    removeNote,
+    unlockSecrets,
+    lockSecrets,
+    enableSecretsVault,
+    saveSecret,
+    removeSecret,
+    revealSecret,
   };
 
   return (

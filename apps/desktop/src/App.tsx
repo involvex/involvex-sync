@@ -11,6 +11,7 @@ import {
   serializeFrame,
   shareUrlBody,
   type PairRequestPayload,
+  type SecretKind,
 } from "@involvex/protocol";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -69,6 +70,34 @@ import {
   saveSettings,
   type DesktopSettings,
 } from "./services/settings";
+import {
+  applyPeerNoteDelete,
+  applyPeerNoteUpsert,
+  clearPendingNoteOps,
+  deleteLocalNote,
+  loadNotes,
+  loadPendingNoteOps,
+  upsertLocalNote,
+  type SyncNote,
+} from "./services/notesStore";
+import {
+  acceptSharedVaultKey,
+  applyPeerSecretDelete,
+  applyPeerSecretUpsert,
+  clearPendingSecretOps,
+  deleteLocalSecret,
+  ensureVaultKey,
+  hasVaultKey,
+  isVaultUnlocked,
+  loadPendingSecretOps,
+  loadSecrets,
+  lockVault,
+  queueVaultKeyShare,
+  revealSecretValue,
+  unlockVault,
+  upsertLocalSecret,
+  type StoredSecret,
+} from "./services/secretsStore";
 import "./App.css";
 
 type SyncFileInfo = {
@@ -175,6 +204,18 @@ export default function App() {
   const [screenshotBusy, setScreenshotBusy] = useState(false);
   const [folderSyncStatus, setFolderSyncStatus] = useState("off");
   const [folderSyncLast, setFolderSyncLast] = useState("");
+  const [notes, setNotes] = useState<SyncNote[]>(() => loadNotes());
+  const [secrets, setSecrets] = useState<StoredSecret[]>(() => loadSecrets());
+  const [vaultUnlocked, setVaultUnlocked] = useState(false);
+  const [noteTitle, setNoteTitle] = useState("");
+  const [noteBody, setNoteBody] = useState("");
+  const [editingNoteId, setEditingNoteId] = useState<string | undefined>();
+  const [secretLabel, setSecretLabel] = useState("");
+  const [secretValue, setSecretValue] = useState("");
+  const [secretKind, setSecretKind] = useState<SecretKind>("api_key");
+  const [revealedSecrets, setRevealedSecrets] = useState<
+    Record<string, string>
+  >({});
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   const sessionRef = useRef<SyncSession | null>(null);
@@ -404,6 +445,46 @@ export default function App() {
           `pair request from ${request.device.name} (${deviceFingerprint(request.device)})`,
         );
       },
+      onNoteUpsert: (note) => {
+        setNotes(
+          applyPeerNoteUpsert({
+            id: note.id,
+            title: note.title,
+            body: note.body,
+            updatedAt: note.updatedAt,
+          }),
+        );
+        log("note synced from phone");
+      },
+      onNoteDelete: (note) => {
+        setNotes(applyPeerNoteDelete(note.id, note.updatedAt));
+        log("note deleted from phone");
+      },
+      onSecretUpsert: (secret) => {
+        setSecrets(
+          applyPeerSecretUpsert({
+            id: secret.id,
+            label: secret.meta.label,
+            kind: secret.meta.kind,
+            updatedAt: secret.updatedAt,
+            nonce: secret.nonce,
+            ciphertext: secret.ciphertext,
+          }),
+        );
+        log("secret synced from phone");
+      },
+      onSecretDelete: (secret) => {
+        setSecrets(applyPeerSecretDelete(secret.id, secret.updatedAt));
+        log("secret deleted from phone");
+      },
+      onVaultKeyShare: async (keyHex) => {
+        try {
+          await acceptSharedVaultKey(keyHex);
+          log("vault key received from phone");
+        } catch (e) {
+          log(`vault key share failed: ${String(e)}`);
+        }
+      },
       onLog: log,
     });
   }, [identity, log, notifyPairRequest, pushHistory, toast]);
@@ -592,6 +673,53 @@ export default function App() {
   const live = Boolean(peer && lan?.status.peerConnected);
   const liveRef = useRef(live);
   liveRef.current = live;
+
+  const flushNotesAndSecrets = useCallback(async () => {
+    const s = sessionRef.current;
+    if (!s || !liveRef.current) return;
+    try {
+      const notePending = loadPendingNoteOps();
+      const noteLeft = [];
+      for (const op of notePending) {
+        try {
+          if (op.op === "upsert") await s.sendNoteUpsert(op.note);
+          else await s.sendNoteDelete({ id: op.id, updatedAt: op.updatedAt });
+        } catch {
+          noteLeft.push(op);
+        }
+      }
+      clearPendingNoteOps(noteLeft);
+
+      const secretPending = loadPendingSecretOps();
+      const secretLeft = [];
+      for (const op of secretPending) {
+        try {
+          if (op.op === "vault_key_share") {
+            await s.sendVaultKeyShare(op.keyHex);
+          } else if (op.op === "upsert") {
+            await s.sendSecretUpsert({
+              id: op.secret.id,
+              updatedAt: op.secret.updatedAt,
+              ciphertext: op.secret.ciphertext,
+              nonce: op.secret.nonce,
+              meta: { label: op.secret.label, kind: op.secret.kind },
+            });
+          } else {
+            await s.sendSecretDelete({ id: op.id, updatedAt: op.updatedAt });
+          }
+        } catch {
+          secretLeft.push(op);
+        }
+      }
+      clearPendingSecretOps(secretLeft);
+    } catch (e) {
+      log(`notes/secrets flush failed: ${String(e)}`);
+    }
+  }, [log]);
+
+  useEffect(() => {
+    if (live) void flushNotesAndSecrets();
+  }, [live, flushNotesAndSecrets]);
   const keyboardReady = settings.sendKeysToPhone && live && phoneKeyboardActive;
 
   const enqueueFolderSync = useCallback(
@@ -1522,6 +1650,403 @@ export default function App() {
               Subfolders are flattened as <code>sub__file.ext</code>. Max{" "}
               {Math.floor(MAX_CHUNKED_FILE_BYTES / (1024 * 1024))} MiB per file.
             </p>
+            <hr className="divider" />
+            <h3>Notes</h3>
+            <p className="muted small">
+              Quick notes sync to the phone when connected
+              {live ? "." : " (offline — queued)."}
+            </p>
+            <label className="stack">
+              Title
+              <input
+                value={noteTitle}
+                onChange={(e) => setNoteTitle(e.target.value)}
+                placeholder="Untitled"
+              />
+            </label>
+            <label className="stack">
+              Note
+              <textarea
+                rows={3}
+                value={noteBody}
+                onChange={(e) => setNoteBody(e.target.value)}
+                placeholder="Write a quick note…"
+              />
+            </label>
+            <div className="row">
+              <button
+                type="button"
+                onClick={() => {
+                  if (!noteTitle.trim() && !noteBody.trim()) return;
+                  const {
+                    notes: next,
+                    note,
+                    pending,
+                  } = upsertLocalNote({
+                    id: editingNoteId,
+                    title: noteTitle.trim() || "Untitled",
+                    body: noteBody,
+                  });
+                  setNotes(next);
+                  setNoteTitle("");
+                  setNoteBody("");
+                  setEditingNoteId(undefined);
+                  const s = sessionRef.current;
+                  if (s && live) {
+                    void s
+                      .sendNoteUpsert(note)
+                      .then(() =>
+                        clearPendingNoteOps(
+                          pending.filter(
+                            (p) =>
+                              !(p.op === "upsert" && p.note.id === note.id) &&
+                              !(p.op === "delete" && p.id === note.id),
+                          ),
+                        ),
+                      )
+                      .catch((e) => log(`note sync queued: ${String(e)}`));
+                  }
+                }}
+              >
+                {editingNoteId ? "Update note" : "Save note"}
+              </button>
+              {editingNoteId ? (
+                <button
+                  type="button"
+                  className="ghost"
+                  onClick={() => {
+                    setEditingNoteId(undefined);
+                    setNoteTitle("");
+                    setNoteBody("");
+                  }}
+                >
+                  Cancel
+                </button>
+              ) : null}
+            </div>
+            <ul className="history">
+              {notes.map((n) => (
+                <li key={n.id}>
+                  <strong>{n.title}</strong>
+                  <p className="muted small">{n.body || "(empty)"}</p>
+                  <div className="row">
+                    <button
+                      type="button"
+                      className="ghost"
+                      onClick={() => {
+                        setEditingNoteId(n.id);
+                        setNoteTitle(n.title);
+                        setNoteBody(n.body);
+                      }}
+                    >
+                      Edit
+                    </button>
+                    <button
+                      type="button"
+                      className="ghost"
+                      onClick={() => {
+                        const { notes: next, pending } = deleteLocalNote(n.id);
+                        setNotes(next);
+                        const del = pending.find(
+                          (p) => p.op === "delete" && p.id === n.id,
+                        );
+                        const s = sessionRef.current;
+                        if (s && live && del && del.op === "delete") {
+                          void s
+                            .sendNoteDelete({
+                              id: del.id,
+                              updatedAt: del.updatedAt,
+                            })
+                            .then(() =>
+                              clearPendingNoteOps(
+                                pending.filter(
+                                  (p) => !(p.op === "delete" && p.id === n.id),
+                                ),
+                              ),
+                            )
+                            .catch((e) =>
+                              log(`note delete queued: ${String(e)}`),
+                            );
+                        }
+                      }}
+                    >
+                      Delete
+                    </button>
+                  </div>
+                </li>
+              ))}
+            </ul>
+            {notes.length === 0 ? (
+              <p className="muted small">No notes yet.</p>
+            ) : null}
+
+            <hr className="divider" />
+            <h3>Secrets</h3>
+            <p className="muted small">
+              API keys / passwords encrypted at rest. Unlock uses Windows
+              Credential Manager (signed-in user). Ciphertext syncs to the
+              phone.
+            </p>
+            <div className="row">
+              {vaultUnlocked ? (
+                <button
+                  type="button"
+                  className="ghost"
+                  onClick={() => {
+                    lockVault();
+                    setVaultUnlocked(false);
+                    setRevealedSecrets({});
+                  }}
+                >
+                  Lock
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => {
+                    void (async () => {
+                      const ok = await unlockVault();
+                      setVaultUnlocked(ok && isVaultUnlocked());
+                      if (!ok) toast("Could not unlock vault", "err");
+                    })();
+                  }}
+                >
+                  Unlock
+                </button>
+              )}
+              <button
+                type="button"
+                className="ghost"
+                onClick={() => {
+                  void (async () => {
+                    try {
+                      const { keyHex, created } = await ensureVaultKey();
+                      setVaultUnlocked(true);
+                      if (created) {
+                        queueVaultKeyShare(keyHex);
+                        const s = sessionRef.current;
+                        if (s && live) {
+                          await s.sendVaultKeyShare(keyHex);
+                          clearPendingSecretOps(
+                            loadPendingSecretOps().filter(
+                              (p) => p.op !== "vault_key_share",
+                            ),
+                          );
+                        }
+                      }
+                      toast("Vault ready", "ok");
+                    } catch (e) {
+                      toast(`Vault: ${String(e)}`, "err");
+                    }
+                  })();
+                }}
+              >
+                Enable vault
+              </button>
+            </div>
+            {vaultUnlocked ? (
+              <>
+                <label className="stack">
+                  Label
+                  <input
+                    value={secretLabel}
+                    onChange={(e) => setSecretLabel(e.target.value)}
+                    placeholder="OpenAI / GitHub token"
+                  />
+                </label>
+                <label className="stack">
+                  Kind
+                  <select
+                    value={secretKind}
+                    onChange={(e) =>
+                      setSecretKind(e.target.value as SecretKind)
+                    }
+                  >
+                    <option value="api_key">api_key</option>
+                    <option value="password">password</option>
+                    <option value="token">token</option>
+                    <option value="text">text</option>
+                  </select>
+                </label>
+                <label className="stack">
+                  Value
+                  <input
+                    type="password"
+                    value={secretValue}
+                    onChange={(e) => setSecretValue(e.target.value)}
+                    placeholder="••••••••"
+                    autoComplete="off"
+                  />
+                </label>
+                <div className="row">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      void (async () => {
+                        if (!secretLabel.trim() || !secretValue.trim()) return;
+                        try {
+                          if (!(await hasVaultKey())) {
+                            const { keyHex, created } = await ensureVaultKey();
+                            if (created) queueVaultKeyShare(keyHex);
+                          } else if (!isVaultUnlocked()) {
+                            const ok = await unlockVault();
+                            if (!ok) throw new Error("vault locked");
+                          }
+                          setVaultUnlocked(true);
+                          const {
+                            secrets: next,
+                            secret,
+                            pending,
+                          } = upsertLocalSecret({
+                            label: secretLabel.trim(),
+                            kind: secretKind,
+                            value: secretValue,
+                          });
+                          setSecrets(next);
+                          setSecretLabel("");
+                          setSecretValue("");
+                          const s = sessionRef.current;
+                          if (s && live) {
+                            const keyPending = pending.find(
+                              (p) => p.op === "vault_key_share",
+                            );
+                            if (
+                              keyPending &&
+                              keyPending.op === "vault_key_share"
+                            ) {
+                              await s.sendVaultKeyShare(keyPending.keyHex);
+                            }
+                            await s.sendSecretUpsert({
+                              id: secret.id,
+                              updatedAt: secret.updatedAt,
+                              ciphertext: secret.ciphertext,
+                              nonce: secret.nonce,
+                              meta: {
+                                label: secret.label,
+                                kind: secret.kind,
+                              },
+                            });
+                            clearPendingSecretOps(
+                              pending.filter(
+                                (p) =>
+                                  !(
+                                    p.op === "vault_key_share" ||
+                                    (p.op === "upsert" &&
+                                      p.secret.id === secret.id) ||
+                                    (p.op === "delete" && p.id === secret.id)
+                                  ),
+                              ),
+                            );
+                          }
+                        } catch (e) {
+                          toast(String(e), "err");
+                        }
+                      })();
+                    }}
+                  >
+                    Save secret
+                  </button>
+                </div>
+              </>
+            ) : (
+              <p className="muted small">
+                Unlock to add or reveal values. Labels stay visible while
+                locked.
+              </p>
+            )}
+            <ul className="history">
+              {secrets.map((sec) => (
+                <li key={sec.id}>
+                  <strong>
+                    {sec.label} · {sec.kind}
+                  </strong>
+                  <p className="muted small mono">
+                    {revealedSecrets[sec.id] ?? "••••••••"}
+                  </p>
+                  <div className="row">
+                    <button
+                      type="button"
+                      className="ghost"
+                      onClick={() => {
+                        void (async () => {
+                          try {
+                            if (!isVaultUnlocked()) {
+                              const ok = await unlockVault();
+                              if (!ok) throw new Error("vault locked");
+                              setVaultUnlocked(true);
+                            }
+                            const value = revealSecretValue(sec);
+                            setRevealedSecrets((prev) => ({
+                              ...prev,
+                              [sec.id]: value,
+                            }));
+                          } catch (e) {
+                            toast(String(e), "err");
+                          }
+                        })();
+                      }}
+                    >
+                      Reveal
+                    </button>
+                    {revealedSecrets[sec.id] ? (
+                      <button
+                        type="button"
+                        className="ghost"
+                        onClick={() => {
+                          const value = revealedSecrets[sec.id];
+                          if (value) void writeText(value);
+                          toast("Copied", "ok");
+                        }}
+                      >
+                        Copy
+                      </button>
+                    ) : null}
+                    <button
+                      type="button"
+                      className="ghost"
+                      onClick={() => {
+                        const { secrets: next, pending } = deleteLocalSecret(
+                          sec.id,
+                        );
+                        setSecrets(next);
+                        setRevealedSecrets((prev) => {
+                          const n = { ...prev };
+                          delete n[sec.id];
+                          return n;
+                        });
+                        const del = pending.find(
+                          (p) => p.op === "delete" && p.id === sec.id,
+                        );
+                        const s = sessionRef.current;
+                        if (s && live && del && del.op === "delete") {
+                          void s
+                            .sendSecretDelete({
+                              id: del.id,
+                              updatedAt: del.updatedAt,
+                            })
+                            .then(() =>
+                              clearPendingSecretOps(
+                                pending.filter(
+                                  (p) =>
+                                    !(p.op === "delete" && p.id === sec.id),
+                                ),
+                              ),
+                            )
+                            .catch((e) =>
+                              log(`secret delete queued: ${String(e)}`),
+                            );
+                        }
+                      }}
+                    >
+                      Delete
+                    </button>
+                  </div>
+                </li>
+              ))}
+            </ul>
+            {secrets.length === 0 ? (
+              <p className="muted small">No secrets yet.</p>
+            ) : null}
           </article>
         ) : null}
 

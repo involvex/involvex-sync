@@ -4,9 +4,13 @@ import {
   type KeyboardKeyId,
   LoopGuard,
   type MessageBody,
+  type NoteDeletePayload,
+  type NoteUpsertPayload,
   type PairAcceptPayload,
   type PeerPublicKeys,
   type RemoteShell,
+  type SecretDeletePayload,
+  type SecretUpsertPayload,
   FILE_CHUNK_BYTES,
   ChunkAssembler,
   assertClipboardImageSize,
@@ -26,6 +30,8 @@ import {
   hashBytes,
   iterateFileChunks,
   keyboardStatusBody,
+  noteDeleteBody,
+  noteUpsertBody,
   notificationMirrorBody,
   parseAllowedUrl,
   parseFrame,
@@ -33,9 +39,12 @@ import {
   randomBytes,
   remoteCommandBody,
   remoteCommandResultBody,
+  secretDeleteBody,
+  secretUpsertBody,
   serializeFrame,
   shareUrlBody,
   toBase64,
+  vaultKeyShareBody,
 } from "@involvex/protocol";
 import type { StoredDeviceKeys, StoredPeer } from "./identity";
 import { toDeviceKeys } from "./identity";
@@ -93,6 +102,23 @@ export type SessionHandlers = {
   ) => void | Promise<void>;
   onPairAccept?: (accept: PairAcceptPayload) => void | Promise<void>;
   onPairReject?: (reason?: string) => void | Promise<void>;
+  onNoteUpsert?: (
+    note: NoteUpsertPayload,
+    from: string,
+  ) => void | Promise<void>;
+  onNoteDelete?: (
+    note: NoteDeletePayload,
+    from: string,
+  ) => void | Promise<void>;
+  onSecretUpsert?: (
+    secret: SecretUpsertPayload,
+    from: string,
+  ) => void | Promise<void>;
+  onSecretDelete?: (
+    secret: SecretDeletePayload,
+    from: string,
+  ) => void | Promise<void>;
+  onVaultKeyShare?: (keyHex: string, from: string) => void | Promise<void>;
   onStatus: (status: string) => void;
   onLog: (line: string) => void;
 };
@@ -404,8 +430,23 @@ export class MobileSession {
         );
         break;
       }
+      case "note_upsert":
+        await this.handlers.onNoteUpsert?.(payload, body.from);
+        break;
+      case "note_delete":
+        await this.handlers.onNoteDelete?.(payload, body.from);
+        break;
+      case "secret_upsert":
+        await this.handlers.onSecretUpsert?.(payload, body.from);
+        break;
+      case "secret_delete":
+        await this.handlers.onSecretDelete?.(payload, body.from);
+        break;
+      case "vault_key_share":
+        await this.handlers.onVaultKeyShare?.(payload.keyHex, body.from);
+        break;
       default:
-        this.handlers.onLog(`recv ${payload.type}`);
+        this.handlers.onLog(`recv unknown payload`);
     }
   }
 
@@ -616,5 +657,58 @@ export class MobileSession {
     } catch {
       /* ignore */
     }
+  }
+
+  sendNoteUpsert(note: {
+    id: string;
+    title: string;
+    body: string;
+    updatedAt: number;
+  }): void {
+    const body = noteUpsertBody(this.local.deviceId, note, this.peer?.deviceId);
+    if (!body) throw new Error("invalid note");
+    this.sendFrame(body);
+  }
+
+  sendNoteDelete(note: { id: string; updatedAt: number }): void {
+    const body = noteDeleteBody(this.local.deviceId, note, this.peer?.deviceId);
+    if (!body) throw new Error("invalid note delete");
+    this.sendFrame(body);
+  }
+
+  sendSecretUpsert(secret: {
+    id: string;
+    updatedAt: number;
+    ciphertext: string;
+    nonce: string;
+    meta: SecretUpsertPayload["meta"];
+  }): void {
+    const body = secretUpsertBody(
+      this.local.deviceId,
+      secret,
+      this.peer?.deviceId,
+    );
+    if (!body) throw new Error("invalid secret");
+    this.sendFrame(body);
+  }
+
+  sendSecretDelete(secret: { id: string; updatedAt: number }): void {
+    const body = secretDeleteBody(
+      this.local.deviceId,
+      secret,
+      this.peer?.deviceId,
+    );
+    if (!body) throw new Error("invalid secret delete");
+    this.sendFrame(body);
+  }
+
+  sendVaultKeyShare(keyHex: string): void {
+    const body = vaultKeyShareBody(
+      this.local.deviceId,
+      keyHex,
+      this.peer?.deviceId,
+    );
+    if (!body) throw new Error("invalid vault key");
+    this.sendFrame(body);
   }
 }

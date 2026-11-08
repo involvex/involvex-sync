@@ -94,6 +94,35 @@ export function deriveAeadKey(shared: Uint8Array): Uint8Array {
   );
 }
 
+/** Domain-separated key for the secrets vault (not the transport AEAD). */
+export function deriveVaultKey(rawKey: Uint8Array): Uint8Array {
+  return sha256(
+    Uint8Array.from([...utf8.encode("involvex-sync-v1-vault"), ...rawKey]),
+  );
+}
+
+/** Generate a fresh 32-byte vault master key (hex). */
+export function generateVaultKeyHex(): string {
+  return bytesToHex(randomBytes(32));
+}
+
+export function sealVaultValue(
+  plaintext: string,
+  vaultKeyHex: string,
+): { nonce: string; ciphertext: string } {
+  const key = deriveVaultKey(hexToBytes(vaultKeyHex));
+  return seal(plaintext, key);
+}
+
+export function openVaultValue(
+  ciphertextHex: string,
+  nonceHex: string,
+  vaultKeyHex: string,
+): string {
+  const key = deriveVaultKey(hexToBytes(vaultKeyHex));
+  return open(ciphertextHex, nonceHex, key);
+}
+
 export function seal(
   plaintext: string,
   aeadKey: Uint8Array,
