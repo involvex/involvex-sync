@@ -103,8 +103,11 @@ InVx Termux package: `com.involvex.termux_app`.
 - **Folder sync (PC → Google Drive):** same watcher; opt-in second sink shells
   out to `gws drive +upload` (credentials from `gws auth login`). Separate
   Drive ledger in localStorage. Does not require the phone to be Live.
-- **Phone → Drive:** Expo app uses Drive REST + OAuth (`drive.file` scope);
-  not Termux/`gws`.
+- **Phone → Drive:** Expo app uses Drive REST + OAuth (`drive.file`). Dedicated
+  Worker `workers/oauth-token-exchange` (`involvex-sync-oauth`): `GET /oauth`
+  HTTPS bridge → `involvex-sync://oauth`; `POST /token` exchanges code+PKCE with
+  the Web client secret (awesome-github-app pattern). Config via
+  `app.json` / `app.config.js` `extra.oauth`.
 - `remote_command`: phone → PowerShell on PC (opt-in); PC → Termux bash on
   phone (opt-in); PC also runs local `adb shell` without the wire protocol.
 

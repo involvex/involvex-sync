@@ -110,9 +110,20 @@ In the desktop **Files** tab: enable **Folder sync → Google Drive**, optional 
 folder ID, then **Test gws connection**. Drop files into the sync folder; status
 shows uploads.
 
-**Phone:** Settings → paste a Google OAuth client ID (Drive API enabled; redirect
-`involvex-sync://oauth`), then Files → **Connect Google Drive**. Upload / list /
-download use the Drive REST API — not Termux/`gws`.
+**Phone:** Dedicated OAuth Worker (same pattern as awesome-github-app):
+
+```bash
+# workers/oauth-token-exchange — set secrets, then:
+bun run oauth:deploy
+```
+
+Web OAuth client redirect URI:
+
+`https://involvex-sync-oauth.involvex.workers.dev/oauth`
+
+Secrets: `GOOGLE_OAUTH_CLIENT_ID_WEB` / `GOOGLE_OAUTH_CLIENT_SECRET_WEB`.
+Put the client ID in `apps/mobile/app.json` → `extra.oauth.webGoogleClientId`
+(or Settings override). Do **not** register `involvex-sync://` on the Web client.
 
 ## Security notes
 

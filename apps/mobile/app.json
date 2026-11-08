@@ -118,7 +118,12 @@
     ],
     "extra": {
       "relayUrl": "wss://sync.involvex.workers.dev/ws",
-      "termuxPackage": "com.involvex.termux_app"
+      "termuxPackage": "com.involvex.termux_app",
+      "oauth": {
+        "webGoogleClientId": "699308700646-ea3b97d997jn7g74h0jd296e75qkv7pa.apps.googleusercontent.com",
+        "webRedirectUri": "https://involvex-sync-oauth.involvex.workers.dev/oauth",
+        "webTokenExchangeUrl": "https://involvex-sync-oauth.involvex.workers.dev/token"
+      }
     }
   }
 }

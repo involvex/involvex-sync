@@ -93,13 +93,19 @@ export function SettingsScreen() {
       <View style={styles.card}>
         <Text style={styles.h2}>Google Drive</Text>
         <Text style={styles.muted}>
-          Uses Drive REST + OAuth (not Termux/gws). Create an OAuth client in
-          Google Cloud Console (Android or Web), enable Drive API, add redirect{" "}
-          <Text style={styles.mono}>involvex-sync://oauth</Text>.
+          Use the Web OAuth client. Redirect + token Worker (awesome-github-app
+          pattern):
+        </Text>
+        <Text style={styles.mono} selectable>
+          https://involvex-sync-oauth.involvex.workers.dev/oauth
+        </Text>
+        <Text style={styles.muted}>
+          Do not add involvex-sync:// on the Web client. Optional override of
+          app.json client ID:
         </Text>
         <TextInput
           style={styles.input}
-          placeholder="OAuth client ID"
+          placeholder="Web OAuth client ID (optional override)"
           placeholderTextColor={colors.placeholder}
           value={appSettings.driveOAuthClientId}
           autoCapitalize="none"

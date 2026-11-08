@@ -21,16 +21,21 @@ async function driveFetch(
 export async function listDriveFiles(
   accessToken: string,
   parentId?: string,
-  pageSize = 20,
+  pageSize = 40,
 ): Promise<DriveFileMeta[]> {
-  const q = parentId?.trim()
-    ? `'${parentId.trim()}' in parents and trashed = false`
-    : `'root' in parents and trashed = false`;
+  // drive.file scope only sees files this app created/opened — not the whole
+  // My Drive tree. Listing 'root' in parents often looks "empty"/dead.
+  const parent = parentId?.trim();
+  const safeParent = parent ? parent.replace(/'/g, "\\'") : "";
+  const q = safeParent
+    ? `'${safeParent}' in parents and trashed = false`
+    : "trashed = false";
   const params = new URLSearchParams({
     pageSize: String(pageSize),
     fields: "files(id,name,mimeType,modifiedTime,size)",
     q,
     orderBy: "modifiedTime desc",
+    spaces: "drive",
   });
   const res = await driveFetch(
     accessToken,

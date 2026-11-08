@@ -16,6 +16,7 @@ import {
   ensureDriveAccessToken,
   listDriveFiles,
   loadDriveTokens,
+  resolveDriveClientId,
   uploadLocalFile,
   type DriveFileMeta,
   type DriveTokens,
@@ -137,6 +138,15 @@ export function FilesScreen() {
       const token = await requireDriveToken();
       const files = await listDriveFiles(token, appSettings.driveFolderId);
       setDriveFiles(files);
+      log(`drive list ${files.length} file(s)`);
+      if (files.length === 0) {
+        Alert.alert(
+          "Google Drive",
+          appSettings.driveFolderId.trim()
+            ? "No files in that folder (or none this app can see with drive.file scope)."
+            : "No files visible yet. With drive.file scope you only see files this app uploaded or opened — try Upload first.",
+        );
+      }
     } catch (e) {
       Alert.alert("Google Drive", String(e));
     } finally {
@@ -247,7 +257,9 @@ export function FilesScreen() {
         <Text style={styles.muted}>
           {driveTokens
             ? `Signed in${driveTokens.email ? ` as ${driveTokens.email}` : ""}`
-            : "Not connected — set OAuth client ID in Settings, then connect."}
+            : resolveDriveClientId(appSettings.driveOAuthClientId)
+              ? "Not connected — tap Connect Google Drive."
+              : "Not connected — set OAuth client ID in Settings."}
         </Text>
         {driveTokens ? (
           <>
@@ -283,7 +295,9 @@ export function FilesScreen() {
         ) : (
           <Pressable
             style={styles.btn}
-            disabled={driveBusy || !appSettings.driveOAuthClientId.trim()}
+            disabled={
+              driveBusy || !resolveDriveClientId(appSettings.driveOAuthClientId)
+            }
             onPress={() => void onConnectDrive()}
           >
             <Text style={styles.btnText}>Connect Google Drive</Text>

@@ -11,7 +11,7 @@
     "test": "bun run --filter @involvex/protocol test",
     "lint": "bun lint",
     "fmt": "bun fmt",
-    "check": "bun check --no-script -p packages/protocol && bun check --no-script -p apps/desktop && bun check --no-script -p apps/mobile && bun check --no-script -p apps/cli && bun check --no-script -p workers/relay",
+    "check": "bun check --no-script -p packages/protocol && bun check --no-script -p apps/desktop && bun check --no-script -p apps/mobile && bun check --no-script -p apps/cli && bun check --no-script -p workers/relay && bun check --no-script -p workers/oauth-token-exchange",
     "desktop:dev": "bun run --filter @involvex/desktop tauri dev",
     "desktop:build": "bun run --filter @involvex/desktop tauri build",
     "mobile:start": "bun run --filter @involvex/mobile start",
@@ -20,6 +20,8 @@
     "isync": "bun run apps/cli/src/isync.ts",
     "relay:dev": "bun run --filter @involvex/relay dev",
     "relay:deploy": "bun run --filter @involvex/relay deploy",
+    "oauth:dev": "bun run --filter @involvex/oauth-token-exchange dev",
+    "oauth:deploy": "bun run --filter @involvex/oauth-token-exchange deploy:prod",
     "prebuild": "bun fmt && bun run check && bun run lint"
   },
   "devDependencies": {

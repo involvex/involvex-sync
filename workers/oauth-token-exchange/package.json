@@ -1,0 +1,17 @@
+{
+  "name": "@involvex/oauth-token-exchange",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Cloudflare Worker for Google OAuth redirect bridge + token exchange",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy --env-file .env -c wrangler.toml",
+    "deploy:prod": "wrangler deploy -c wrangler.toml",
+    "check": "bun check"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20250204.0",
+    "typescript": "^5.7.3",
+    "wrangler": "^4.0.0"
+  }
+}

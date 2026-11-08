@@ -1,6 +1,8 @@
 /**
  * Ciphertext-only mailbox between a paired phone and desktop.
  * Uses hibernatable WebSockets so idle pairs do not burn Free-plan duration.
+ *
+ * Google OAuth lives in workers/oauth-token-exchange (not here).
  */
 
 export interface Env {

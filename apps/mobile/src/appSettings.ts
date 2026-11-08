@@ -34,7 +34,9 @@ export const defaultMobileAppSettings: MobileAppSettings = {
   autoClipboardSync: false,
   autoClipboardImages: true,
   theme: "system",
-  driveOAuthClientId: "",
+  /** Default Web OAuth client (also in app.json extra.oauth). */
+  driveOAuthClientId:
+    "699308700646-ea3b97d997jn7g74h0jd296e75qkv7pa.apps.googleusercontent.com",
   driveFolderId: "",
   driveUploadEnabled: false,
 };
@@ -79,8 +81,9 @@ export async function loadAppSettings(): Promise<MobileAppSettings> {
           : defaults.autoClipboardImages,
       theme: parseTheme(parsed.theme),
       driveOAuthClientId:
-        typeof parsed.driveOAuthClientId === "string"
-          ? parsed.driveOAuthClientId
+        typeof parsed.driveOAuthClientId === "string" &&
+        parsed.driveOAuthClientId.trim()
+          ? parsed.driveOAuthClientId.trim()
           : defaults.driveOAuthClientId,
       driveFolderId:
         typeof parsed.driveFolderId === "string"
