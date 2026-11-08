@@ -91,6 +91,63 @@ export function SettingsScreen() {
       </View>
 
       <View style={styles.card}>
+        <Text style={styles.h2}>Google Drive</Text>
+        <Text style={styles.muted}>
+          Uses Drive REST + OAuth (not Termux/gws). Create an OAuth client in
+          Google Cloud Console (Android or Web), enable Drive API, add redirect{" "}
+          <Text style={styles.mono}>involvex-sync://oauth</Text>.
+        </Text>
+        <TextInput
+          style={styles.input}
+          placeholder="OAuth client ID"
+          placeholderTextColor={colors.placeholder}
+          value={appSettings.driveOAuthClientId}
+          autoCapitalize="none"
+          autoCorrect={false}
+          onChangeText={(text) => {
+            void saveAppSettings({ driveOAuthClientId: text }).then(
+              setAppSettings,
+            );
+          }}
+          onFocus={scrollOnFocus}
+        />
+        <TextInput
+          style={styles.input}
+          placeholder="Drive folder ID (optional)"
+          placeholderTextColor={colors.placeholder}
+          value={appSettings.driveFolderId}
+          autoCapitalize="none"
+          autoCorrect={false}
+          onChangeText={(text) => {
+            void saveAppSettings({ driveFolderId: text }).then(setAppSettings);
+          }}
+          onFocus={scrollOnFocus}
+        />
+        <View style={styles.settingRow}>
+          <View style={styles.settingCopy}>
+            <Text style={styles.body}>Drive upload shortcut</Text>
+            <Text style={styles.muted}>
+              Show Drive actions as preferred on Files tab
+            </Text>
+          </View>
+          <Switch
+            value={appSettings.driveUploadEnabled}
+            onValueChange={(next) => {
+              void saveAppSettings({ driveUploadEnabled: next }).then(
+                setAppSettings,
+              );
+              log(next ? "drive upload on" : "drive upload off");
+            }}
+            trackColor={{
+              false: colors.switchTrackOff,
+              true: colors.switchTrackOn,
+            }}
+            thumbColor={colors.switchThumb}
+          />
+        </View>
+      </View>
+
+      <View style={styles.card}>
         <Text style={styles.h2}>Features</Text>
         <View style={styles.settingRow}>
           <View style={styles.settingCopy}>

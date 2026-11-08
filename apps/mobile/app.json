@@ -2,6 +2,7 @@
   "expo": {
     "name": "involvex Sync",
     "slug": "involvex-sync",
+    "scheme": "involvex-sync",
     "version": "0.1.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
@@ -112,7 +113,8 @@
         {
           "faceIDPermission": "Unlock Secrets with Face ID"
         }
-      ]
+      ],
+      "expo-web-browser"
     ],
     "extra": {
       "relayUrl": "wss://sync.involvex.workers.dev/ws",

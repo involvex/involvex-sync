@@ -100,6 +100,11 @@ InVx Termux package: `com.involvex.termux_app`.
   existing chunked transfer into the phone SAF save folder. Subpaths flatten
   (`sub/a.pdf` → `sub__a.pdf`). Ledger in localStorage avoids re-sends. Soft
   cap 100 MiB; offline queue flushes when Live again.
+- **Folder sync (PC → Google Drive):** same watcher; opt-in second sink shells
+  out to `gws drive +upload` (credentials from `gws auth login`). Separate
+  Drive ledger in localStorage. Does not require the phone to be Live.
+- **Phone → Drive:** Expo app uses Drive REST + OAuth (`drive.file` scope);
+  not Termux/`gws`.
 - `remote_command`: phone → PowerShell on PC (opt-in); PC → Termux bash on
   phone (opt-in); PC also runs local `adb shell` without the wire protocol.
 

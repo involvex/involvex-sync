@@ -102,6 +102,40 @@ pub fn run_adb_shell(command: &str, timeout_ms: u64) -> Result<CommandResult, St
     run_with_timeout(cmd, timeout)
 }
 
+/// Run `gws` with an argv list (no shell). Max 32 args, each ≤ 8 KiB.
+pub fn run_gws(args: &[String], timeout_ms: u64) -> Result<CommandResult, String> {
+    if args.is_empty() {
+        return Err("empty gws args".into());
+    }
+    if args.len() > 32 {
+        return Err("too many gws args".into());
+    }
+    for a in args {
+        if a.len() > 8 * 1024 {
+            return Err("gws arg too long".into());
+        }
+        if a.contains('\0') {
+            return Err("gws arg contains NUL".into());
+        }
+    }
+    let timeout = Duration::from_millis(timeout_ms.clamp(1_000, 300_000));
+    let mut cmd = Command::new("gws");
+    cmd.args(args);
+    match run_with_timeout(cmd, timeout) {
+        Ok(r) => Ok(r),
+        Err(e) => {
+            // Distinguish missing binary from other spawn failures.
+            if e.contains("spawn:") {
+                Err(format!(
+                    "gws not found on PATH ({e}). Install @googleworkspace/cli or add gws to PATH."
+                ))
+            } else {
+                Err(e)
+            }
+        }
+    }
+}
+
 /// Capture the phone screen via `adb exec-out screencap -p` (binary PNG).
 /// Writes to a temp file and returns its path for clipboard / preview use.
 pub fn adb_screencap_png(timeout_ms: u64) -> Result<String, String> {

@@ -15,6 +15,10 @@ export type DesktopSettings = {
   folderSyncEnabled: boolean;
   /** PC folder watched for outbound sync. */
   folderSyncDir: string;
+  /** Upload watched-folder files to Google Drive via gws. Default false. */
+  driveSyncEnabled: boolean;
+  /** Drive folder id for uploads (empty = My Drive root). */
+  driveSyncFolderId: string;
   /** Auto-push OS clipboard changes to the phone while Live. Default false. */
   autoClipboardSync: boolean;
   /** Include images/screenshots in auto clipboard sync. Default true when auto on. */
@@ -30,6 +34,8 @@ const defaults: DesktopSettings = {
   allowRemotePwsh: false,
   folderSyncEnabled: false,
   folderSyncDir: "I:\\Downloads\\Involvex-Sync",
+  driveSyncEnabled: false,
+  driveSyncFolderId: "",
   autoClipboardSync: false,
   autoClipboardImages: true,
   theme: "system",

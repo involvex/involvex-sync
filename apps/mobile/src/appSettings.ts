@@ -19,16 +19,27 @@ export type MobileAppSettings = {
   autoClipboardImages: boolean;
   /** Appearance preference. Default system. */
   theme: ThemePreference;
+  /** Google OAuth client ID (Android or Web) for Drive. */
+  driveOAuthClientId: string;
+  /** Target Drive folder id (empty = My Drive root). */
+  driveFolderId: string;
+  /** When true, shared/picked files can also upload to Drive. */
+  driveUploadEnabled: boolean;
 };
 
-const defaults: MobileAppSettings = {
+export const defaultMobileAppSettings: MobileAppSettings = {
   incomingFilesUri: "",
   incomingFilesLabel: "",
   allowRemoteTermux: false,
   autoClipboardSync: false,
   autoClipboardImages: true,
   theme: "system",
+  driveOAuthClientId: "",
+  driveFolderId: "",
+  driveUploadEnabled: false,
 };
+
+const defaults = defaultMobileAppSettings;
 
 function parseTheme(value: unknown): ThemePreference {
   if (value === "light" || value === "dark" || value === "system") {
@@ -67,6 +78,18 @@ export async function loadAppSettings(): Promise<MobileAppSettings> {
           ? parsed.autoClipboardImages
           : defaults.autoClipboardImages,
       theme: parseTheme(parsed.theme),
+      driveOAuthClientId:
+        typeof parsed.driveOAuthClientId === "string"
+          ? parsed.driveOAuthClientId
+          : defaults.driveOAuthClientId,
+      driveFolderId:
+        typeof parsed.driveFolderId === "string"
+          ? parsed.driveFolderId
+          : defaults.driveFolderId,
+      driveUploadEnabled:
+        typeof parsed.driveUploadEnabled === "boolean"
+          ? parsed.driveUploadEnabled
+          : defaults.driveUploadEnabled,
     };
   } catch {
     return { ...defaults };
@@ -99,6 +122,18 @@ export async function saveAppSettings(
         ? patch.autoClipboardImages
         : current.autoClipboardImages,
     theme: patch.theme !== undefined ? parseTheme(patch.theme) : current.theme,
+    driveOAuthClientId:
+      typeof patch.driveOAuthClientId === "string"
+        ? patch.driveOAuthClientId.trim()
+        : current.driveOAuthClientId,
+    driveFolderId:
+      typeof patch.driveFolderId === "string"
+        ? patch.driveFolderId.trim()
+        : current.driveFolderId,
+    driveUploadEnabled:
+      typeof patch.driveUploadEnabled === "boolean"
+        ? patch.driveUploadEnabled
+        : current.driveUploadEnabled,
   };
   await SecureStore.setItemAsync(KEY, JSON.stringify(next));
   return next;

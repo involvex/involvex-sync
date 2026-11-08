@@ -213,6 +213,14 @@ fn run_adb_shell(
 }
 
 #[tauri::command]
+fn run_gws(
+    args: Vec<String>,
+    timeout_ms: Option<u64>,
+) -> Result<shell::CommandResult, String> {
+    shell::run_gws(&args, timeout_ms.unwrap_or(120_000))
+}
+
+#[tauri::command]
 fn adb_screencap(timeout_ms: Option<u64>) -> Result<String, String> {
     shell::adb_screencap_png(timeout_ms.unwrap_or(20_000))
 }
@@ -375,6 +383,7 @@ pub fn run() {
             default_incoming_dir,
             run_pwsh,
             run_adb_shell,
+            run_gws,
             adb_screencap,
             show_main_window_cmd,
             start_folder_sync,

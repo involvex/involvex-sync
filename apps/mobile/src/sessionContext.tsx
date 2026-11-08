@@ -91,6 +91,7 @@ import {
   savePeer,
 } from "./identity";
 import {
+  defaultMobileAppSettings,
   loadAppSettings,
   saveAppSettings,
   type MobileAppSettings,
@@ -301,14 +302,9 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   const [a11yReceive, setA11yReceive] = useState(false);
   const [a11yGranted, setA11yGranted] = useState(false);
   const [finding, setFinding] = useState(false);
-  const [appSettings, setAppSettings] = useState<MobileAppSettings>({
-    incomingFilesUri: "",
-    incomingFilesLabel: "",
-    allowRemoteTermux: false,
-    autoClipboardSync: false,
-    autoClipboardImages: true,
-    theme: "system",
-  });
+  const [appSettings, setAppSettings] = useState<MobileAppSettings>(() => ({
+    ...defaultMobileAppSettings,
+  }));
   const [pwshCmd, setPwshCmd] = useState("");
   const [cmdOutput, setCmdOutput] = useState("");
   const [hydrated, setHydrated] = useState(false);

@@ -94,6 +94,26 @@ bun run relay:dev
 The worker never decrypts. Free-plan limits apply (hibernation WebSockets,
 small offline queue, no file transfer).
 
+## Google Drive sync (desktop)
+
+Opt-in: watch the same outbound sync folder and upload new/changed files with
+[`gws`](https://github.com/googleworkspace/cli) (independent of PC → phone sync).
+
+```bash
+# install CLI (or download a release binary onto PATH)
+npm install -g @googleworkspace/cli
+gws auth login -s drive
+gws drive files list --params '{"pageSize": 5}'
+```
+
+In the desktop **Files** tab: enable **Folder sync → Google Drive**, optional Drive
+folder ID, then **Test gws connection**. Drop files into the sync folder; status
+shows uploads.
+
+**Phone:** Settings → paste a Google OAuth client ID (Drive API enabled; redirect
+`involvex-sync://oauth`), then Files → **Connect Google Drive**. Upload / list /
+download use the Drive REST API — not Termux/`gws`.
+
 ## Security notes
 
 - Pairing exchanges public keys in person (QR / paste).

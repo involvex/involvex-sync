@@ -1,11 +1,25 @@
-import { useState } from "react";
-import { Alert, Pressable, Text, TextInput, View } from "react-native";
+import { useCallback, useEffect, useState } from "react";
+import { Alert, Pressable, Switch, Text, TextInput, View } from "react-native";
 import * as Clipboard from "expo-clipboard";
+import * as DocumentPicker from "expo-document-picker";
+import * as FileSystem from "expo-file-system/legacy";
 import type { SecretKind } from "@involvex/protocol";
+import { saveAppSettings } from "../appSettings";
 import {
   KeyboardScreen,
   useScrollInputOnFocus,
 } from "../components/KeyboardScreen";
+import {
+  clearDriveTokens,
+  connectGoogleDrive,
+  downloadDriveFile,
+  ensureDriveAccessToken,
+  listDriveFiles,
+  loadDriveTokens,
+  uploadLocalFile,
+  type DriveFileMeta,
+  type DriveTokens,
+} from "../drive";
 import { useSession } from "../sessionContext";
 import { useTheme } from "../themeContext";
 import { makeStyles } from "../ui/styles";
@@ -18,6 +32,7 @@ export function FilesScreen() {
   const { onFocus: scrollOnFocus } = useScrollInputOnFocus();
   const {
     appSettings,
+    setAppSettings,
     pickIncomingFolder,
     clearIncomingFolder,
     pickAndSendFile,
@@ -35,6 +50,7 @@ export function FilesScreen() {
     removeSecret,
     revealSecret,
     connected,
+    log,
   } = useSession();
 
   const [noteTitle, setNoteTitle] = useState("");
@@ -44,6 +60,128 @@ export function FilesScreen() {
   const [secretValue, setSecretValue] = useState("");
   const [secretKind, setSecretKind] = useState<SecretKind>("api_key");
   const [revealed, setRevealed] = useState<Record<string, string>>({});
+  const [driveTokens, setDriveTokens] = useState<DriveTokens | null>(null);
+  const [driveFiles, setDriveFiles] = useState<DriveFileMeta[]>([]);
+  const [driveBusy, setDriveBusy] = useState(false);
+
+  const refreshDriveSession = useCallback(async () => {
+    const tokens = await loadDriveTokens();
+    setDriveTokens(tokens);
+  }, []);
+
+  useEffect(() => {
+    void refreshDriveSession();
+  }, [refreshDriveSession]);
+
+  const requireDriveToken = async (): Promise<string> => {
+    const token = await ensureDriveAccessToken(appSettings.driveOAuthClientId);
+    if (!token) {
+      throw new Error("Connect Google Drive in Settings first");
+    }
+    return token;
+  };
+
+  const onConnectDrive = async () => {
+    try {
+      setDriveBusy(true);
+      const tokens = await connectGoogleDrive(appSettings.driveOAuthClientId);
+      setDriveTokens(tokens);
+      log(`drive connected ${tokens.email ?? ""}`.trim());
+      Alert.alert(
+        "Google Drive",
+        `Connected${tokens.email ? ` as ${tokens.email}` : ""}`,
+      );
+    } catch (e) {
+      Alert.alert("Google Drive", String(e));
+    } finally {
+      setDriveBusy(false);
+    }
+  };
+
+  const onDisconnectDrive = async () => {
+    await clearDriveTokens();
+    setDriveTokens(null);
+    setDriveFiles([]);
+    log("drive disconnected");
+  };
+
+  const onUploadToDrive = async () => {
+    try {
+      setDriveBusy(true);
+      const token = await requireDriveToken();
+      const picked = await DocumentPicker.getDocumentAsync({
+        copyToCacheDirectory: true,
+        multiple: false,
+      });
+      if (picked.canceled || !picked.assets?.[0]) return;
+      const asset = picked.assets[0];
+      const meta = await uploadLocalFile(token, {
+        uri: asset.uri,
+        name: asset.name || "upload.bin",
+        mimeType: asset.mimeType || "application/octet-stream",
+        parentId: appSettings.driveFolderId,
+      });
+      log(`drive upload ${meta.name || asset.name} (${meta.id})`);
+      Alert.alert("Google Drive", `Uploaded ${asset.name}`);
+      void onListDrive();
+    } catch (e) {
+      Alert.alert("Google Drive", String(e));
+    } finally {
+      setDriveBusy(false);
+    }
+  };
+
+  const onListDrive = async () => {
+    try {
+      setDriveBusy(true);
+      const token = await requireDriveToken();
+      const files = await listDriveFiles(token, appSettings.driveFolderId);
+      setDriveFiles(files);
+    } catch (e) {
+      Alert.alert("Google Drive", String(e));
+    } finally {
+      setDriveBusy(false);
+    }
+  };
+
+  const onDownloadDriveFile = async (file: DriveFileMeta) => {
+    try {
+      setDriveBusy(true);
+      const token = await requireDriveToken();
+      const cacheRoot = FileSystem.cacheDirectory;
+      if (!cacheRoot) throw new Error("no cache directory");
+      const dest = `${cacheRoot}drive-${file.id}-${file.name}`;
+      const localUri = await downloadDriveFile(token, file.id, dest);
+      const folderUri = appSettings.incomingFilesUri;
+      if (folderUri) {
+        const created = await FileSystem.StorageAccessFramework.createFileAsync(
+          folderUri,
+          file.name,
+          file.mimeType || "application/octet-stream",
+        );
+        const b64 = await FileSystem.readAsStringAsync(localUri, {
+          encoding: FileSystem.EncodingType.Base64,
+        });
+        await FileSystem.StorageAccessFramework.writeAsStringAsync(
+          created,
+          b64,
+          { encoding: FileSystem.EncodingType.Base64 },
+        );
+        log(`drive download → SAF ${file.name}`);
+        Alert.alert("Google Drive", `Saved ${file.name} to save folder`);
+      } else {
+        log(`drive download → cache ${file.name}`);
+        Alert.alert(
+          "Google Drive",
+          `Downloaded to cache. Pick a save folder to keep files.`,
+        );
+      }
+    } catch (e) {
+      Alert.alert("Google Drive", String(e));
+    } finally {
+      setDriveBusy(false);
+    }
+  };
 
   const onSaveNote = async () => {
     if (!noteTitle.trim() && !noteBody.trim()) return;
@@ -102,6 +240,76 @@ export function FilesScreen() {
         >
           <Text style={styles.btnText}>Send file to PC</Text>
         </Pressable>
+      </View>
+
+      <View style={styles.card}>
+        <Text style={styles.h2}>Google Drive</Text>
+        <Text style={styles.muted}>
+          {driveTokens
+            ? `Signed in${driveTokens.email ? ` as ${driveTokens.email}` : ""}`
+            : "Not connected — set OAuth client ID in Settings, then connect."}
+        </Text>
+        {driveTokens ? (
+          <>
+            <Pressable
+              style={styles.btn}
+              disabled={driveBusy}
+              onPress={() => void onUploadToDrive()}
+            >
+              <Text style={styles.btnText}>Upload file to Drive</Text>
+            </Pressable>
+            <Pressable
+              style={styles.btnGhost}
+              disabled={driveBusy}
+              onPress={() => void onListDrive()}
+            >
+              <Text style={styles.btnText}>List folder</Text>
+            </Pressable>
+            <Pressable
+              style={styles.linkBtn}
+              onPress={() => void onDisconnectDrive()}
+            >
+              <Text style={styles.linkText}>Disconnect Google</Text>
+            </Pressable>
+            {driveFiles.map((f) => (
+              <View key={f.id} style={{ marginTop: 8, gap: 4 }}>
+                <Text style={styles.mono}>{f.name}</Text>
+                <Pressable onPress={() => void onDownloadDriveFile(f)}>
+                  <Text style={styles.linkText}>Download</Text>
+                </Pressable>
+              </View>
+            ))}
+          </>
+        ) : (
+          <Pressable
+            style={styles.btn}
+            disabled={driveBusy || !appSettings.driveOAuthClientId.trim()}
+            onPress={() => void onConnectDrive()}
+          >
+            <Text style={styles.btnText}>Connect Google Drive</Text>
+          </Pressable>
+        )}
+        <View style={styles.settingRow}>
+          <View style={styles.settingCopy}>
+            <Text style={styles.body}>Prefer Drive uploads</Text>
+            <Text style={styles.muted}>
+              Highlight Drive actions on this tab (manual upload still required)
+            </Text>
+          </View>
+          <Switch
+            value={appSettings.driveUploadEnabled}
+            onValueChange={(next) => {
+              void saveAppSettings({ driveUploadEnabled: next }).then(
+                setAppSettings,
+              );
+            }}
+            trackColor={{
+              false: colors.switchTrackOff,
+              true: colors.switchTrackOn,
+            }}
+            thumbColor={colors.switchThumb}
+          />
+        </View>
       </View>
 
       {pendingFiles.length > 0 ? (

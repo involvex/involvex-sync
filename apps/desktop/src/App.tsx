@@ -65,6 +65,13 @@ import {
   type FolderSyncLedger,
 } from "./services/folderSyncLedger";
 import {
+  isDriveSynced,
+  loadDriveLedger,
+  markDriveSynced,
+  type DriveSyncLedger,
+} from "./services/driveSyncLedger";
+import { probeGws, uploadFileToDrive } from "./services/gwsDrive";
+import {
   loadSettings,
   resolveThemeMode,
   saveSettings,
@@ -204,6 +211,8 @@ export default function App() {
   const [screenshotBusy, setScreenshotBusy] = useState(false);
   const [folderSyncStatus, setFolderSyncStatus] = useState("off");
   const [folderSyncLast, setFolderSyncLast] = useState("");
+  const [driveSyncStatus, setDriveSyncStatus] = useState("off");
+  const [driveSyncLast, setDriveSyncLast] = useState("");
   const [notes, setNotes] = useState<SyncNote[]>(() => loadNotes());
   const [secrets, setSecrets] = useState<StoredSecret[]>(() => loadSecrets());
   const [vaultUnlocked, setVaultUnlocked] = useState(false);
@@ -224,6 +233,9 @@ export default function App() {
   const folderSyncQueueRef = useRef<FolderSyncReady[]>([]);
   const folderSyncBusyRef = useRef(false);
   const folderSyncRootRef = useRef(settings.folderSyncDir);
+  const driveSyncLedgerRef = useRef<DriveSyncLedger>(loadDriveLedger());
+  const driveSyncQueueRef = useRef<FolderSyncReady[]>([]);
+  const driveSyncBusyRef = useRef(false);
   const sendClipboardRef = useRef<() => Promise<void>>(async () => {});
 
   useEffect(() => {
@@ -722,8 +734,28 @@ export default function App() {
   }, [live, flushNotesAndSecrets]);
   const keyboardReady = settings.sendKeysToPhone && live && phoneKeyboardActive;
 
+  const pushQueueBounded = (
+    q: FolderSyncReady[],
+    item: FolderSyncReady,
+  ): boolean => {
+    if (
+      q.some(
+        (x) =>
+          x.path === item.path &&
+          x.size === item.size &&
+          x.mtimeMs === item.mtimeMs,
+      )
+    ) {
+      return false;
+    }
+    if (q.length >= 40) q.shift();
+    q.push(item);
+    return true;
+  };
+
   const enqueueFolderSync = useCallback(
     (item: FolderSyncReady) => {
+      if (!settingsRef.current.folderSyncEnabled) return;
       if (
         isSynced(
           folderSyncLedgerRef.current,
@@ -738,29 +770,41 @@ export default function App() {
         log(`folder sync skip ${item.relativeName} (${item.size} B > cap)`);
         return;
       }
-      const q = folderSyncQueueRef.current;
-      if (
-        q.some(
-          (x) =>
-            x.path === item.path &&
-            x.size === item.size &&
-            x.mtimeMs === item.mtimeMs,
-        )
-      ) {
-        return;
+      if (pushQueueBounded(folderSyncQueueRef.current, item)) {
+        setFolderSyncStatus(`queued ${folderSyncQueueRef.current.length}`);
       }
-      // Bound offline queue.
-      if (q.length >= 40) {
-        q.shift();
-      }
-      q.push(item);
-      setFolderSyncStatus(`queued ${q.length}`);
     },
     [log],
   );
 
+  const enqueueDriveSync = useCallback((item: FolderSyncReady) => {
+    if (!settingsRef.current.driveSyncEnabled) return;
+    if (
+      isDriveSynced(
+        driveSyncLedgerRef.current,
+        item.relativeName,
+        item.size,
+        item.mtimeMs,
+      )
+    ) {
+      return;
+    }
+    if (pushQueueBounded(driveSyncQueueRef.current, item)) {
+      setDriveSyncStatus(`queued ${driveSyncQueueRef.current.length}`);
+    }
+  }, []);
+
+  const enqueueWatchItem = useCallback(
+    (item: FolderSyncReady) => {
+      enqueueFolderSync(item);
+      enqueueDriveSync(item);
+    },
+    [enqueueDriveSync, enqueueFolderSync],
+  );
+
   const drainFolderSyncQueue = useCallback(async () => {
     if (folderSyncBusyRef.current) return;
+    if (!settingsRef.current.folderSyncEnabled) return;
     folderSyncBusyRef.current = true;
     try {
       while (folderSyncQueueRef.current.length > 0) {
@@ -812,7 +856,6 @@ export default function App() {
           toast(`Synced ${payload.relativeName}`, "ok");
         } catch (e) {
           log(`folder sync failed ${item.relativeName}: ${String(e)}`);
-          // Leave at front; pause until next reconnect/drain.
           setFolderSyncStatus(
             `error · queued ${folderSyncQueueRef.current.length}`,
           );
@@ -829,13 +872,74 @@ export default function App() {
     }
   }, [log, toast]);
 
+  const drainDriveSyncQueue = useCallback(async () => {
+    if (driveSyncBusyRef.current) return;
+    if (!settingsRef.current.driveSyncEnabled) return;
+    driveSyncBusyRef.current = true;
+    try {
+      while (driveSyncQueueRef.current.length > 0) {
+        const item = driveSyncQueueRef.current[0];
+        if (
+          isDriveSynced(
+            driveSyncLedgerRef.current,
+            item.relativeName,
+            item.size,
+            item.mtimeMs,
+          )
+        ) {
+          driveSyncQueueRef.current.shift();
+          continue;
+        }
+        setDriveSyncStatus(`uploading ${item.relativeName}`);
+        try {
+          const result = await uploadFileToDrive({
+            path: item.path,
+            name: item.relativeName,
+            parentId: settingsRef.current.driveSyncFolderId,
+          });
+          if (!result.ok) {
+            log(`drive sync failed ${item.relativeName}: ${result.detail}`);
+            setDriveSyncStatus(
+              `error · queued ${driveSyncQueueRef.current.length}`,
+            );
+            break;
+          }
+          driveSyncLedgerRef.current = markDriveSynced(
+            driveSyncLedgerRef.current,
+            item.relativeName,
+            item.size,
+            item.mtimeMs,
+            result.fileId,
+          );
+          driveSyncQueueRef.current.shift();
+          setDriveSyncLast(item.relativeName);
+          log(`drive sync → ${item.relativeName}`);
+          toast(`Drive: ${item.relativeName}`, "ok");
+        } catch (e) {
+          log(`drive sync failed ${item.relativeName}: ${String(e)}`);
+          setDriveSyncStatus(
+            `error · queued ${driveSyncQueueRef.current.length}`,
+          );
+          break;
+        }
+      }
+      if (driveSyncQueueRef.current.length === 0) {
+        setDriveSyncStatus(
+          settingsRef.current.driveSyncEnabled ? "watching" : "off",
+        );
+      }
+    } finally {
+      driveSyncBusyRef.current = false;
+    }
+  }, [log, toast]);
+
   const scanFolderSync = useCallback(async () => {
     const dir = settingsRef.current.folderSyncDir.trim();
     if (!dir) return;
     try {
       const files = await invoke<SyncFileInfo[]>("list_sync_files", { dir });
       for (const f of files) {
-        enqueueFolderSync({
+        enqueueWatchItem({
           path: f.path,
           relativeName: f.relativeName,
           size: f.size,
@@ -843,21 +947,51 @@ export default function App() {
         });
       }
       void drainFolderSyncQueue();
+      void drainDriveSyncQueue();
     } catch (e) {
       log(`folder sync scan: ${String(e)}`);
     }
-  }, [drainFolderSyncQueue, enqueueFolderSync, log]);
+  }, [drainDriveSyncQueue, drainFolderSyncQueue, enqueueWatchItem, log]);
+
+  const onProbeDrive = useCallback(async () => {
+    setDriveSyncStatus("probing…");
+    const probe = await probeGws();
+    if (probe.status === "ok") {
+      setDriveSyncStatus(
+        settingsRef.current.driveSyncEnabled ? "watching" : "connected",
+      );
+      toast("gws Drive OK", "ok");
+      log(`gws probe: ${probe.detail}`);
+    } else if (probe.status === "missing") {
+      setDriveSyncStatus("gws missing");
+      toast("gws not on PATH", "err");
+      log(`gws probe missing: ${probe.detail}`);
+    } else if (probe.status === "auth") {
+      setDriveSyncStatus("auth needed");
+      toast("gws auth needed — run gws auth login -s drive", "err");
+      log(`gws probe auth: ${probe.detail}`);
+    } else {
+      setDriveSyncStatus("error");
+      toast(probe.detail, "err");
+      log(`gws probe error: ${probe.detail}`);
+    }
+  }, [log, toast]);
 
   useEffect(() => {
     let cancelled = false;
+    const watchEnabled =
+      settings.folderSyncEnabled || settings.driveSyncEnabled;
     void (async () => {
-      if (!settings.folderSyncEnabled) {
+      if (!watchEnabled) {
         try {
           await invoke("stop_folder_sync");
         } catch {
           /* ignore */
         }
-        if (!cancelled) setFolderSyncStatus("off");
+        if (!cancelled) {
+          if (!settings.folderSyncEnabled) setFolderSyncStatus("off");
+          if (!settings.driveSyncEnabled) setDriveSyncStatus("off");
+        }
         return;
       }
       const dir =
@@ -867,12 +1001,16 @@ export default function App() {
         const root = await invoke<string>("start_folder_sync", { dir });
         if (cancelled) return;
         folderSyncRootRef.current = root;
-        setFolderSyncStatus("watching");
-        log(`folder sync watching ${root}`);
+        if (settings.folderSyncEnabled) setFolderSyncStatus("watching");
+        if (settings.driveSyncEnabled) setDriveSyncStatus("watching");
+        log(
+          `folder watch ${root} (phone=${settings.folderSyncEnabled} drive=${settings.driveSyncEnabled})`,
+        );
         await scanFolderSync();
       } catch (e) {
         if (!cancelled) {
-          setFolderSyncStatus("error");
+          if (settings.folderSyncEnabled) setFolderSyncStatus("error");
+          if (settings.driveSyncEnabled) setDriveSyncStatus("error");
           log(`folder sync start: ${String(e)}`);
         }
       }
@@ -880,25 +1018,37 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, [settings.folderSyncEnabled, settings.folderSyncDir, log, scanFolderSync]);
+  }, [
+    settings.folderSyncEnabled,
+    settings.driveSyncEnabled,
+    settings.folderSyncDir,
+    log,
+    scanFolderSync,
+  ]);
 
   useEffect(() => {
     let unlisten: (() => void) | undefined;
     void listen<FolderSyncReady>("folder-sync-ready", (e) => {
-      enqueueFolderSync(e.payload);
+      enqueueWatchItem(e.payload);
       void drainFolderSyncQueue();
+      void drainDriveSyncQueue();
     }).then((fn) => {
       unlisten = fn;
     });
     return () => {
       unlisten?.();
     };
-  }, [drainFolderSyncQueue, enqueueFolderSync]);
+  }, [drainDriveSyncQueue, drainFolderSyncQueue, enqueueWatchItem]);
 
   useEffect(() => {
     if (!live) return;
     void drainFolderSyncQueue();
   }, [live, drainFolderSyncQueue]);
+
+  useEffect(() => {
+    if (!settings.driveSyncEnabled) return;
+    void drainDriveSyncQueue();
+  }, [settings.driveSyncEnabled, drainDriveSyncQueue]);
 
   async function onAcceptPair(): Promise<void> {
     if (!session || !pendingPair) return;
@@ -1649,6 +1799,64 @@ export default function App() {
               One-way PC → phone. Phone must have a save folder picked (SAF).
               Subfolders are flattened as <code>sub__file.ext</code>. Max{" "}
               {Math.floor(MAX_CHUNKED_FILE_BYTES / (1024 * 1024))} MiB per file.
+            </p>
+            <hr className="divider" />
+            <h3>Folder sync → Google Drive</h3>
+            <label className="check">
+              <input
+                type="checkbox"
+                checked={settings.driveSyncEnabled}
+                onChange={(e) => {
+                  const next = saveSettings({
+                    driveSyncEnabled: e.target.checked,
+                  });
+                  setSettings(next);
+                  log(
+                    next.driveSyncEnabled ? "drive sync on" : "drive sync off",
+                  );
+                }}
+              />
+              Upload new files from the sync folder via gws
+            </label>
+            <label className="stack">
+              Drive folder ID (optional)
+              <input
+                value={settings.driveSyncFolderId}
+                onChange={(e) => {
+                  const next = saveSettings({
+                    driveSyncFolderId: e.target.value.trim(),
+                  });
+                  setSettings(next);
+                }}
+                placeholder="Leave empty for My Drive root"
+                disabled={!settings.driveSyncEnabled}
+              />
+            </label>
+            <p className="muted small">
+              Status: {driveSyncStatus}
+              {driveSyncLast ? ` · last ${driveSyncLast}` : ""}
+            </p>
+            <div className="row">
+              <button
+                type="button"
+                className="ghost"
+                onClick={() => void onProbeDrive()}
+              >
+                Test gws connection
+              </button>
+              <button
+                type="button"
+                className="ghost"
+                disabled={!settings.driveSyncEnabled}
+                onClick={() => void scanFolderSync()}
+              >
+                Scan now
+              </button>
+            </div>
+            <p className="muted small">
+              Requires <code>gws</code> on PATH and{" "}
+              <code>gws auth login -s drive</code>. Uses the same sync folder as
+              phone sync; either sink can run alone or together.
             </p>
             <hr className="divider" />
             <h3>Notes</h3>
@@ -2424,6 +2632,19 @@ export default function App() {
                 />
                 Folder sync (PC → phone)
               </label>
+              <label className="check">
+                <input
+                  type="checkbox"
+                  checked={settings.driveSyncEnabled}
+                  onChange={(e) => {
+                    const next = saveSettings({
+                      driveSyncEnabled: e.target.checked,
+                    });
+                    setSettings(next);
+                  }}
+                />
+                Folder sync (PC → Google Drive via gws)
+              </label>
               <label className="stack">
                 Outbound sync folder
                 <input
@@ -2437,11 +2658,25 @@ export default function App() {
                   placeholder="I:\Downloads\Involvex-Sync"
                 />
               </label>
+              <label className="stack">
+                Drive folder ID
+                <input
+                  value={settings.driveSyncFolderId}
+                  onChange={(e) => {
+                    const next = saveSettings({
+                      driveSyncFolderId: e.target.value.trim(),
+                    });
+                    setSettings(next);
+                  }}
+                  placeholder="Empty = My Drive root"
+                />
+              </label>
               <p className="muted small">
                 Leave incoming blank for default:{" "}
                 {defaultIncomingDir || "Downloads/involvex-Sync"}. Close or
                 minimize hides to the tray (tray menu: Open, Send clipboard,
-                Quit). Pair requests always notify.
+                Quit). Pair requests always notify. Drive sync needs{" "}
+                <code>gws</code> on PATH.
               </p>
             </article>
 
