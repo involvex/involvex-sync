@@ -954,7 +954,9 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   }, [log]);
 
   useEffect(() => {
-    if (!session || peers.length === 0) return;
+    if (!session) return;
+    // Empty list must reach setPeers so unpairing the last host closes its
+    // socket; skipping that left a dangling WebSocket after the final unpair.
     session.setPeers(peers, (p) => ({
       ...defaultTransport(p.host ?? host),
       mode,

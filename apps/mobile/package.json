@@ -8,8 +8,9 @@
     "android": "expo run:android",
     "ios": "expo run:ios",
     "web": "expo start --web",
-    "check": "bun check && expo:check",
+    "check": "bun check && bun check -p tsconfig.test.json && expo:check",
     "expo:check": "expo install --check",
+    "test": "bun test",
     "prebuild": "expo prebuild --platform android",
     "build": "expo run:android --variant release --no-bundler",
     "build:apk": "cd android && gradlew.bat assembleRelease"
