@@ -52,7 +52,7 @@ export default {
   },
 };
 
-function normalizePairId(raw: string): string {
+export function normalizePairId(raw: string): string {
   const parts = raw.split(":").filter(Boolean);
   if (parts.length === 2) {
     return [...parts].sort().join(":");
@@ -72,12 +72,28 @@ export class PairRoom implements DurableObject {
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
     const pairParam = url.searchParams.get("deviceId") ?? "";
-    const deviceId = pairParam.includes(":")
-      ? guessSelfId(pairParam, this.sessions)
-      : pairParam;
+    // Explicit self id wins: the old heuristic (first free half of `A:B`)
+    // mislabelled a *reconnecting* device — if A reconnected while B was
+    // absent it took B's slot and the pair stopped delivering.
+    const deviceId = resolveDeviceId(
+      pairParam,
+      url.searchParams.get("self"),
+      this.sessions,
+    );
 
     const pair = new WebSocketPair();
     const [client, server] = Object.values(pair) as [WebSocket, WebSocket];
+
+    // A reconnect replaces the previous socket for this id — close the old
+    // one so it cannot receive frames behind the new one's back.
+    const stale = this.sessions.get(deviceId);
+    if (stale && stale !== server) {
+      try {
+        stale.close(1000, "replaced");
+      } catch {
+        /* already closing */
+      }
+    }
 
     this.state.acceptWebSocket(server, [deviceId]);
     this.sessions.set(deviceId, server);
@@ -153,7 +169,40 @@ export class PairRoom implements DurableObject {
   }
 }
 
-function guessSelfId(
+/// Ids come from device keys; keep them boring so a socket cannot smuggle a
+/// colon (which would let it claim the other half of a pair room).
+export function sanitizeId(raw: string): string {
+  const trimmed = raw.trim();
+  if (!trimmed || trimmed.length > 200 || trimmed.includes(":")) return "";
+  return trimmed;
+}
+
+/// Which device is this socket? The explicit `self` parameter wins, but only
+/// when it is one of the pair's two ids — otherwise anyone holding the pair
+/// string could sit in the room as a third (unremovable) listener. Old
+/// clients that omit `self` get the legacy `A:B` guess.
+export function resolveDeviceId(
+  pairParam: string,
+  selfParam: string | null,
+  sessions: Map<string, WebSocket>,
+): string {
+  const parts = normalizePairId(pairParam).split(":").filter(Boolean);
+  const self = selfParam ? sanitizeId(selfParam) : "";
+  const validSelf =
+    self.length > 0 &&
+    (parts.length === 2 ? parts.includes(self) : self === pairParam);
+  if (validSelf) return self;
+  if (parts.length === 2) return guessSelfId(pairParam, sessions);
+  return pairParam;
+}
+
+/**
+ * Legacy fallback: derive a device id from the `A:B` pair param by taking the
+ * half that is not already in the room. Mislabels a *reconnecting* device (if
+ * A reconnects while B is absent, A takes B's slot), which is why the worker
+ * prefers the explicit `self` parameter. Kept for old clients.
+ */
+export function guessSelfId(
   pairParam: string,
   sessions: Map<string, WebSocket>,
 ): string {

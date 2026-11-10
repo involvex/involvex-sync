@@ -24,7 +24,8 @@ export class RelayClient {
   ) {
     const pair = peerId ? `${local.deviceId}:${peerId}` : local.deviceId;
     const base = relayUrl.replace(/\/$/, "");
-    this.url = `${base}?deviceId=${encodeURIComponent(pair)}`;
+    // `self` is authoritative: the worker's `A:B` guess mislabels reconnects.
+    this.url = `${base}?deviceId=${encodeURIComponent(pair)}&self=${encodeURIComponent(local.deviceId)}`;
     this.handlers = handlers;
   }
 

@@ -51,6 +51,28 @@ fn ws_send(state: State<'_, AppState>, message: String) -> Result<(), String> {
     state.hub.send_to_peer(message)
 }
 
+/// Send to one specific socket (multi-peer: phone + second PC + laptop).
+#[tauri::command]
+fn ws_send_to(
+    state: State<'_, AppState>,
+    conn_id: u32,
+    message: String,
+) -> Result<(), String> {
+    state.hub.send_to_conn(conn_id, message)
+}
+
+#[tauri::command]
+fn ws_conns(state: State<'_, AppState>) -> Vec<ws::ConnInfo> {
+    state.hub.conn_list()
+}
+
+/// Drop one socket (stale reconnect, or user removes a peer).
+#[tauri::command]
+fn ws_close(state: State<'_, AppState>, conn_id: u32) -> Result<(), String> {
+    state.hub.close_conn(conn_id);
+    Ok(())
+}
+
 #[tauri::command]
 fn open_allowed_url(url: String) -> Result<(), String> {
     let trimmed = url.trim();
@@ -126,7 +148,7 @@ fn start_mdns(
 
 #[tauri::command]
 fn ensure_firewall_rule() -> Result<String, String> {
-    firewall::ensure_private_inbound_rule(DEFAULT_PORT)
+    firewall::ensure_inbound_rule(DEFAULT_PORT)
 }
 
 fn default_incoming_path() -> Result<std::path::PathBuf, String> {

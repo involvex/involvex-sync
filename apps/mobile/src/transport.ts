@@ -36,7 +36,7 @@ export function resolveWsUrl(
   if (cfg.mode === "relay") {
     const base = cfg.relayUrl.replace(/\/$/, "");
     const pair = peerId ? `${deviceId}:${peerId}` : deviceId;
-    return `${base}?deviceId=${encodeURIComponent(pair)}`;
+    return `${base}?deviceId=${encodeURIComponent(pair)}&self=${encodeURIComponent(deviceId)}`;
   }
 
   const host = cfg.host.trim();

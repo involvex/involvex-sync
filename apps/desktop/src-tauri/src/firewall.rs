@@ -15,7 +15,7 @@ fn netsh(args: &[String]) -> Command {
     cmd
 }
 
-pub fn ensure_private_inbound_rule(port: u16) -> Result<String, String> {
+pub fn ensure_inbound_rule(port: u16) -> Result<String, String> {
     // Remove stale rule first (ignore failure).
     let _ = netsh(&[
         "advfirewall".into(),
@@ -36,7 +36,10 @@ pub fn ensure_private_inbound_rule(port: u16) -> Result<String, String> {
         "action=allow".into(),
         "protocol=TCP".into(),
         format!("localport={port}"),
-        "profile=private".into(),
+        // `any`, not `private`: the laptop is often on public Wi-Fi or on a
+        // phone hotspot, and both are classified as public. Pairing (E2E,
+        // in-person key exchange) is the gate — profile scoping is not.
+        "profile=any".into(),
         "enable=yes".into(),
     ])
     .output()
@@ -44,7 +47,7 @@ pub fn ensure_private_inbound_rule(port: u16) -> Result<String, String> {
 
     if output.status.success() {
         Ok(format!(
-            "Firewall rule '{RULE_NAME}' allows TCP {port} on private profiles"
+            "Firewall rule '{RULE_NAME}' allows TCP {port} inbound on all profiles"
         ))
     } else {
         let stderr = String::from_utf8_lossy(&output.stderr);
