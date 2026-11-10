@@ -2,8 +2,10 @@ import {
   type DeviceKeys,
   type DeviceType,
   type KeyboardKeyId,
+  DEFAULT_PORT,
   LoopGuard,
   type MessageBody,
+  createMessageBody,
   type NoteDeletePayload,
   type NoteUpsertPayload,
   type PairAcceptPayload,
@@ -49,6 +51,21 @@ import {
 import type { StoredDeviceKeys, StoredPeer } from "./identity";
 import { toDeviceKeys } from "./identity";
 import { type TransportConfig, resolveWsUrl } from "./transport";
+
+/** Reconnect backoff: 2.5s → 5s → 10s … capped at 60s. */
+const RECONNECT_BASE_MS = 2_500;
+const RECONNECT_MAX_MS = 60_000;
+const RECONNECT_MAX_ATTEMPTS = 8;
+
+/** One live socket per paired host. */
+type PeerConn = {
+  peer: StoredPeer;
+  keys: PeerPublicKeys;
+  transport: TransportConfig;
+  ws: WebSocket | null;
+  reconnectAttempts: number;
+  reconnectTimer: ReturnType<typeof setTimeout> | null;
+};
 
 export type RemoteCommandRequest = {
   requestId: string;
@@ -127,11 +144,13 @@ export class MobileSession {
   readonly local: DeviceKeys;
   readonly loop = new LoopGuard();
   peer: PeerPublicKeys | null = null;
-  private ws: WebSocket | null = null;
   private handlers: SessionHandlers;
-  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
-  private transport: TransportConfig | null = null;
-  private peerId: string | undefined;
+  /** One connection per paired host (PC + laptop). */
+  private conns = new Map<string, PeerConn>();
+  private activePeerId: string | null = null;
+  /** One-off socket for pairing handshakes (not tied to a stored peer). */
+  private pairingSocket: WebSocket | null = null;
+  private pairingTransport: TransportConfig | null = null;
   private pairingMode = false;
   private identityMeta: { name: string; type: DeviceType };
   private assemblers = new Map<string, ChunkAssembler>();
@@ -142,31 +161,224 @@ export class MobileSession {
     this.identityMeta = { name: stored.name, type: "android" };
   }
 
+  /** Replace the paired set, keeping sockets for peers that are still paired. */
+  setPeers(
+    peers: StoredPeer[],
+    transportFor: (peer: StoredPeer) => TransportConfig,
+  ): void {
+    const next = new Map<string, PeerConn>();
+    for (const p of peers) {
+      const existing = this.conns.get(p.deviceId);
+      const keys: PeerPublicKeys = {
+        deviceId: p.deviceId,
+        ed25519PublicKey: p.ed25519PublicKey,
+        x25519PublicKey: p.x25519PublicKey,
+      };
+      if (existing) {
+        existing.peer = p;
+        existing.keys = keys;
+        existing.transport = transportFor(p);
+        next.set(p.deviceId, existing);
+      } else {
+        next.set(p.deviceId, {
+          peer: p,
+          keys,
+          transport: transportFor(p),
+          ws: null,
+          reconnectAttempts: 0,
+          reconnectTimer: null,
+        });
+      }
+    }
+    // Sockets for peers that are no longer paired go away.
+    for (const [id, conn] of this.conns) {
+      if (!next.has(id)) this.teardownConn(conn);
+    }
+    this.conns = next;
+    if (this.activePeerId && !next.has(this.activePeerId)) {
+      this.activePeerId = null;
+    }
+    this.syncActivePeer();
+  }
+
+  setActivePeer(deviceId: string | null): void {
+    if (deviceId && !this.conns.has(deviceId)) return;
+    this.activePeerId = deviceId;
+    this.syncActivePeer();
+  }
+
+  get activeDeviceId(): string | null {
+    return this.activePeerId;
+  }
+
+  get peerIds(): string[] {
+    return [...this.conns.keys()];
+  }
+
+  private syncActivePeer(): void {
+    const id = this.activePeerId ?? this.conns.keys().next().value ?? null;
+    const conn = id ? this.conns.get(id) : undefined;
+    this.peer = conn?.keys ?? null;
+  }
+
+  private teardownConn(conn: PeerConn): void {
+    if (conn.reconnectTimer) clearTimeout(conn.reconnectTimer);
+    conn.reconnectTimer = null;
+    if (conn.ws) {
+      conn.ws.onclose = null;
+      conn.ws.onerror = null;
+      conn.ws.onmessage = null;
+      conn.ws.onopen = null;
+      conn.ws.close();
+      conn.ws = null;
+    }
+  }
+
+  /** Open (or re-open) the socket for one paired host. */
+  connectPeer(deviceId: string): void {
+    const conn = this.conns.get(deviceId);
+    if (conn) this.openConn(conn);
+  }
+
+  /** Open every paired host's socket — the "Connect" action. */
+  connectAll(): void {
+    for (const conn of this.conns.values()) this.openConn(conn);
+  }
+
   setPeer(peer: StoredPeer): void {
-    this.peer = {
-      deviceId: peer.deviceId,
-      ed25519PublicKey: peer.ed25519PublicKey,
-      x25519PublicKey: peer.x25519PublicKey,
-    };
-    this.peerId = peer.deviceId;
+    this.conns.set(peer.deviceId, {
+      peer,
+      keys: {
+        deviceId: peer.deviceId,
+        ed25519PublicKey: peer.ed25519PublicKey,
+        x25519PublicKey: peer.x25519PublicKey,
+      },
+      transport: {
+        mode: "lan",
+        host: peer.host ?? "",
+        port: peer.port ?? DEFAULT_PORT,
+        relayUrl: "",
+      },
+      ws: null,
+      reconnectAttempts: 0,
+      reconnectTimer: null,
+    });
+    this.setActivePeer(peer.deviceId);
+  }
+
+  /** Pairing transport: a one-off socket used to exchange handshakes. */
+  connect(transport: TransportConfig, opts?: { pairing?: boolean }): void {
+    this.pairingTransport = transport;
+    this.pairingMode = opts?.pairing === true;
+    this.teardownPairingSocket();
+    this.openPairingSocket(transport);
   }
 
   clearPeer(): void {
+    for (const conn of this.conns.values()) this.teardownConn(conn);
+    this.conns.clear();
+    this.activePeerId = null;
     this.peer = null;
-    this.peerId = undefined;
+    this.teardownPairingSocket();
   }
 
   get isOpen(): boolean {
-    return this.ws?.readyState === WebSocket.OPEN;
+    return this.activeConn()?.ws?.readyState === WebSocket.OPEN;
   }
 
-  connect(transport: TransportConfig, opts?: { pairing?: boolean }): void {
-    this.disconnect();
-    this.transport = transport;
-    this.pairingMode = opts?.pairing === true;
+  /** Is any paired host connected? */
+  get anyOpen(): boolean {
+    for (const conn of this.conns.values()) {
+      if (conn.ws?.readyState === WebSocket.OPEN) return true;
+    }
+    return false;
+  }
+
+  isPeerOpen(deviceId: string): boolean {
+    return this.conns.get(deviceId)?.ws?.readyState === WebSocket.OPEN;
+  }
+
+  private activeConn(): PeerConn | undefined {
+    const id = this.activePeerId ?? this.conns.keys().next().value;
+    return id ? this.conns.get(id) : undefined;
+  }
+
+  /** Open one paired host's socket (idempotent). */
+  private openConn(conn: PeerConn): void {
+    if (conn.ws && conn.ws.readyState <= WebSocket.OPEN) return;
     let url: string;
     try {
-      url = resolveWsUrl(transport, this.local.deviceId, this.peerId);
+      url = resolveWsUrl(
+        conn.transport,
+        this.local.deviceId,
+        conn.peer.deviceId,
+      );
+    } catch (e) {
+      this.handlers.onLog(`${conn.peer.name}: ${String(e)}`);
+      return;
+    }
+
+    this.handlers.onLog(`${conn.peer.name}: connecting ${url}`);
+    const ws = new WebSocket(url);
+    conn.ws = ws;
+
+    ws.onopen = () => {
+      conn.reconnectAttempts = 0;
+      this.handlers.onStatus(
+        `connected (${conn.transport.mode}) · ${conn.peer.name}`,
+      );
+      // Identify this socket straight away, so the desktop can route replies
+      // to the selected device instead of whichever connected last.
+      try {
+        this.sendFrameTo(
+          conn.peer.deviceId,
+          createMessageBody(
+            this.local.deviceId,
+            { type: "ping", ts: Date.now() },
+            conn.peer.deviceId,
+          ),
+        );
+      } catch {
+        /* socket raced closed */
+      }
+    };
+    ws.onmessage = (event) => {
+      const raw = typeof event.data === "string" ? event.data : "";
+      void this.handleIncomingRaw(raw, conn.peer.deviceId);
+    };
+    ws.onerror = () => {
+      this.handlers.onLog(`${conn.peer.name}: socket error`);
+    };
+    ws.onclose = () => {
+      conn.ws = null;
+      this.handlers.onStatus(`disconnected · ${conn.peer.name}`);
+      this.scheduleReconnect(conn);
+    };
+  }
+
+  /**
+   * Reconnect with backoff: a flat 2.5s retry hammers a sleeping PC, drains
+   * battery, and gets the phone's socket rate-limited on mobile networks.
+   * 2.5s → 5s → 10s … capped at 60s, reset on a successful open.
+   */
+  private scheduleReconnect(conn: PeerConn): void {
+    if (conn.reconnectTimer) clearTimeout(conn.reconnectTimer);
+    const attempt = conn.reconnectAttempts;
+    conn.reconnectAttempts = Math.min(attempt + 1, RECONNECT_MAX_ATTEMPTS);
+    const delay = Math.min(RECONNECT_BASE_MS * 2 ** attempt, RECONNECT_MAX_MS);
+    const label =
+      delay >= 1000 ? `${(delay / 1000).toFixed(0)}s` : `${delay}ms`;
+    this.handlers.onLog(
+      `${conn.peer.name}: reconnect in ${label} (attempt ${attempt + 1})`,
+    );
+    conn.reconnectTimer = setTimeout(() => this.openConn(conn), delay);
+  }
+
+  /** One-off pairing socket (not bound to a stored peer). */
+  private openPairingSocket(transport: TransportConfig): void {
+    let url: string;
+    try {
+      url = resolveWsUrl(transport, this.local.deviceId, this.peer?.deviceId);
     } catch (e) {
       this.handlers.onStatus(`error: ${String(e)}`);
       return;
@@ -174,7 +386,7 @@ export class MobileSession {
 
     this.handlers.onStatus(`connecting ${url}`);
     const ws = new WebSocket(url);
-    this.ws = ws;
+    this.pairingSocket = ws;
 
     ws.onopen = () => {
       this.handlers.onStatus(
@@ -200,33 +412,37 @@ export class MobileSession {
       this.handlers.onStatus("socket error");
     };
     ws.onclose = () => {
+      this.pairingSocket = null;
       this.handlers.onStatus("disconnected");
-      if (!this.pairingMode) this.scheduleReconnect();
     };
   }
 
-  private scheduleReconnect(): void {
-    if (!this.transport) return;
-    if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
-    this.reconnectTimer = setTimeout(() => {
-      if (this.transport) this.connect(this.transport);
-    }, 2_500);
-  }
-
-  disconnect(): void {
-    if (this.reconnectTimer) {
-      clearTimeout(this.reconnectTimer);
-      this.reconnectTimer = null;
+  private teardownPairingSocket(): void {
+    if (this.pairingSocket) {
+      this.pairingSocket.onclose = null;
+      this.pairingSocket.close();
+      this.pairingSocket = null;
     }
     this.pairingMode = false;
-    if (this.ws) {
-      this.ws.onclose = null;
-      this.ws.close();
-      this.ws = null;
-    }
   }
 
-  async handleIncomingRaw(raw: string): Promise<void> {
+  /** Close every socket, keep pairings. */
+  disconnect(): void {
+    for (const conn of this.conns.values()) {
+      if (conn.reconnectTimer) {
+        clearTimeout(conn.reconnectTimer);
+        conn.reconnectTimer = null;
+      }
+      if (conn.ws) {
+        conn.ws.onclose = null;
+        conn.ws.close();
+        conn.ws = null;
+      }
+    }
+    this.teardownPairingSocket();
+  }
+
+  async handleIncomingRaw(raw: string, fromPeerId?: string): Promise<void> {
     const handshake = parsePairHandshake(raw);
     if (handshake) {
       if (handshake.kind === "involvex-sync-pair-accept") {
@@ -237,13 +453,13 @@ export class MobileSession {
       if (handshake.kind === "involvex-sync-pair-reject") {
         this.pairingMode = false;
         await this.handlers.onPairReject?.(handshake.reason);
-        this.disconnect();
+        this.teardownPairingSocket();
         return;
       }
       return;
     }
 
-    if (!this.peer) {
+    if (this.conns.size === 0) {
       this.handlers.onLog("drop: no peer");
       return;
     }
@@ -252,9 +468,25 @@ export class MobileSession {
       this.handlers.onLog("drop: bad frame");
       return;
     }
-    const result = decryptFrame(frame, this.local, this.peer);
+    // The envelope names the sender, so the right key is chosen by identity
+    // rather than by whichever socket happened to deliver it.
+    const conn =
+      (fromPeerId ? this.conns.get(fromPeerId) : undefined) ??
+      this.conns.get(frame.from);
+    const peer = conn?.keys;
+    if (!conn || !peer) {
+      this.handlers.onLog(`drop: unknown sender ${frame.from}`);
+      return;
+    }
+    const result = decryptFrame(frame, this.local, peer);
     if (!result.ok) {
       this.handlers.onLog(`drop: ${result.error}`);
+      return;
+    }
+    if (result.body.to && result.body.to !== this.local.deviceId) {
+      this.handlers.onLog(
+        `drop: addressed to ${result.body.to}, not ${this.local.deviceId}`,
+      );
       return;
     }
     await this.dispatch(result.body);
@@ -450,12 +682,39 @@ export class MobileSession {
     }
   }
 
+  /** Send to the active host only. */
   private sendFrame(body: MessageBody): void {
-    if (!this.peer || !this.ws || this.ws.readyState !== WebSocket.OPEN) {
+    const conn = this.activeConn();
+    if (!conn || !conn.ws || conn.ws.readyState !== WebSocket.OPEN) {
       throw new Error("not connected");
     }
-    const frame = encryptFrame(body, this.local, this.peer);
-    this.ws.send(serializeFrame(frame));
+    const frame = encryptFrame(body, this.local, conn.keys);
+    conn.ws.send(serializeFrame(frame));
+  }
+
+  /** Send to one specific host (no-op when it is offline). */
+  private sendFrameTo(deviceId: string, body: MessageBody): boolean {
+    const conn = this.conns.get(deviceId);
+    if (!conn || !conn.ws || conn.ws.readyState !== WebSocket.OPEN) {
+      return false;
+    }
+    const frame = encryptFrame(body, this.local, conn.keys);
+    conn.ws.send(serializeFrame(frame));
+    return true;
+  }
+
+  /** Send a body to every connected host. Returns how many received it. */
+  private broadcastFrame(body: MessageBody): number {
+    let sent = 0;
+    for (const conn of this.conns.values()) {
+      if (conn.ws?.readyState === WebSocket.OPEN) {
+        const frame = encryptFrame(body, this.local, conn.keys);
+        conn.ws.send(serializeFrame(frame));
+        sent += 1;
+      }
+    }
+    if (sent === 0) throw new Error("not connected");
+    return sent;
   }
 
   sendShareUrl(urlInput: string): void {
@@ -590,28 +849,22 @@ export class MobileSession {
     );
   }
 
+  /** Mirrored notifications are interesting to every host. */
   sendNotificationMirror(note: {
     title: string;
     body: string;
     packageName?: string;
     when?: number;
   }): void {
-    if (!this.peer) throw new Error("not connected");
-    this.sendFrame(
-      notificationMirrorBody(this.local.deviceId, note, this.peer.deviceId),
-    );
+    this.broadcastFrame(notificationMirrorBody(this.local.deviceId, note));
   }
 
+  /** Keyboard status must reach every host so each can unlock its tab. */
   sendKeyboardStatus(active: boolean, mode?: "ime" | "a11y" | "none"): void {
-    if (!this.peer || !this.isOpen) return;
+    if (!this.anyOpen) return;
     try {
-      this.sendFrame(
-        keyboardStatusBody(
-          this.local.deviceId,
-          active,
-          this.peer.deviceId,
-          mode,
-        ),
+      this.broadcastFrame(
+        keyboardStatusBody(this.local.deviceId, active, undefined, mode),
       );
     } catch {
       /* ignore */
@@ -659,21 +912,34 @@ export class MobileSession {
     }
   }
 
+  /** Notes are shared state: every host gets its own encrypted copy. */
   sendNoteUpsert(note: {
     id: string;
     title: string;
     body: string;
     updatedAt: number;
   }): void {
-    const body = noteUpsertBody(this.local.deviceId, note, this.peer?.deviceId);
-    if (!body) throw new Error("invalid note");
-    this.sendFrame(body);
+    if (!noteUpsertBody(this.local.deviceId, note)) {
+      throw new Error("invalid note");
+    }
+    for (const id of this.conns.keys()) {
+      this.sendFrameTo(
+        id,
+        noteUpsertBody(this.local.deviceId, note, id) as MessageBody,
+      );
+    }
   }
 
   sendNoteDelete(note: { id: string; updatedAt: number }): void {
-    const body = noteDeleteBody(this.local.deviceId, note, this.peer?.deviceId);
-    if (!body) throw new Error("invalid note delete");
-    this.sendFrame(body);
+    if (!noteDeleteBody(this.local.deviceId, note)) {
+      throw new Error("invalid note delete");
+    }
+    for (const id of this.conns.keys()) {
+      this.sendFrameTo(
+        id,
+        noteDeleteBody(this.local.deviceId, note, id) as MessageBody,
+      );
+    }
   }
 
   sendSecretUpsert(secret: {
@@ -683,32 +949,39 @@ export class MobileSession {
     nonce: string;
     meta: SecretUpsertPayload["meta"];
   }): void {
-    const body = secretUpsertBody(
-      this.local.deviceId,
-      secret,
-      this.peer?.deviceId,
-    );
-    if (!body) throw new Error("invalid secret");
-    this.sendFrame(body);
+    if (!secretUpsertBody(this.local.deviceId, secret)) {
+      throw new Error("invalid secret");
+    }
+    for (const id of this.conns.keys()) {
+      this.sendFrameTo(
+        id,
+        secretUpsertBody(this.local.deviceId, secret, id) as MessageBody,
+      );
+    }
   }
 
   sendSecretDelete(secret: { id: string; updatedAt: number }): void {
-    const body = secretDeleteBody(
-      this.local.deviceId,
-      secret,
-      this.peer?.deviceId,
-    );
-    if (!body) throw new Error("invalid secret delete");
-    this.sendFrame(body);
+    if (!secretDeleteBody(this.local.deviceId, secret)) {
+      throw new Error("invalid secret delete");
+    }
+    for (const id of this.conns.keys()) {
+      this.sendFrameTo(
+        id,
+        secretDeleteBody(this.local.deviceId, secret, id) as MessageBody,
+      );
+    }
   }
 
+  /** The vault key is the root of the shared secret store — all hosts need it. */
   sendVaultKeyShare(keyHex: string): void {
-    const body = vaultKeyShareBody(
-      this.local.deviceId,
-      keyHex,
-      this.peer?.deviceId,
-    );
-    if (!body) throw new Error("invalid vault key");
-    this.sendFrame(body);
+    if (!vaultKeyShareBody(this.local.deviceId, keyHex)) {
+      throw new Error("invalid vault key");
+    }
+    let sent = 0;
+    for (const id of this.conns.keys()) {
+      const body = vaultKeyShareBody(this.local.deviceId, keyHex, id);
+      if (body && this.sendFrameTo(id, body)) sent += 1;
+    }
+    if (sent === 0) this.handlers.onLog("vault key share: no host connected");
   }
 }

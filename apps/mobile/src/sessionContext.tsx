@@ -85,9 +85,10 @@ import {
 import {
   type StoredDeviceKeys,
   type StoredPeer,
-  clearPeer,
+  clearPeers,
   ensureLocalIdentity,
-  loadPeer,
+  loadPeers,
+  removePeer,
   savePeer,
 } from "./identity";
 import {
@@ -169,6 +170,12 @@ function labelFromSafUri(uri: string): string {
 export type SessionContextValue = {
   identity: StoredDeviceKeys | null;
   peer: StoredPeer | null;
+  /** All paired devices (PC + laptop). */
+  peers: StoredPeer[];
+  /** Send target for clipboard/files/keys. */
+  activePeerId: string | null;
+  /** Is this specific device connected right now? */
+  isPeerOpen: (deviceId: string) => boolean;
   host: string;
   setHost: (v: string) => void;
   port: string;
@@ -225,7 +232,10 @@ export type SessionContextValue = {
   onPair: () => Promise<void>;
   openScanner: () => Promise<void>;
   onScanPayload: (data: string) => Promise<void>;
-  onUnpair: () => Promise<void>;
+  onUnpair: (deviceId?: string) => Promise<void>;
+  onUnpairAll: () => Promise<void>;
+  onUsePeer: (deviceId: string) => void;
+  onConnectPeer: (deviceId: string) => void;
   copyPairingJson: () => Promise<void>;
   sendClipboardLink: () => Promise<void>;
   resendHistory: (entry: ClipboardHistoryEntry) => Promise<void>;
@@ -275,7 +285,13 @@ export function useSession(): SessionContextValue {
 
 export function SessionProvider({ children }: { children: ReactNode }) {
   const [identity, setIdentity] = useState<StoredDeviceKeys | null>(null);
-  const [peer, setPeer] = useState<StoredPeer | null>(null);
+  const [peers, setPeers] = useState<StoredPeer[]>([]);
+  const [activePeerId, setActivePeerId] = useState<string | null>(null);
+  /** Active pairing — the send target for clipboard/files/keys. */
+  const peer = useMemo(
+    () => peers.find((p) => p.deviceId === activePeerId) ?? null,
+    [peers, activePeerId],
+  );
   const [host, setHost] = useState("");
   const [port, setPort] = useState(String(DEFAULT_PORT));
   const [mode, setMode] = useState<TransportMode>("lan");
@@ -312,6 +328,9 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   const [secrets, setSecrets] = useState<StoredSecret[]>([]);
   const [vaultUnlocked, setVaultUnlocked] = useState(false);
   const sessionRef = useRef<MobileSession | null>(null);
+  /** Latest peer list without re-creating the session when it changes. */
+  const peersRef = useRef<StoredPeer[]>([]);
+  peersRef.current = peers;
   const imeReceiveRef = useRef(false);
   const imeActiveRef = useRef(false);
   const a11yReceiveRef = useRef(false);
@@ -388,8 +407,10 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       const id = await ensureLocalIdentity("Android");
       setIdentity(id);
       const prefs = await loadTransportPrefs();
-      const stored = await loadPeer();
-      if (stored) setPeer(stored);
+      const storedPeers = await loadPeers();
+      setPeers(storedPeers);
+      if (storedPeers.length > 0) setActivePeerId(storedPeers[0].deviceId);
+      const stored = storedPeers[0] ?? null;
       setMode(prefs.mode);
       // Prefer saved transport host/port; fall back to last paired peer.
       if (prefs.host) {
@@ -811,7 +832,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
           port: accept.port,
         };
         await savePeer(next);
-        setPeer(next);
+        upsertPeer(next, true);
         const nextHost = accept.host ?? host;
         const nextPort = accept.port || DEFAULT_PORT;
         if (accept.host) setHost(accept.host);
@@ -821,7 +842,13 @@ export function SessionProvider({ children }: { children: ReactNode }) {
           host: nextHost,
           port: nextPort,
         });
-        s.setPeer(next);
+        s.setPeers([...peersRef.current, next], (p) => ({
+          ...transport,
+          host: p.host ?? nextHost,
+          port: p.port ?? nextPort,
+        }));
+        s.setActivePeer(next.deviceId);
+        s.connectPeer(next.deviceId);
         setPairingBusy(false);
         setPairingPhase("idle");
         log(`paired ${next.name} (${deviceFingerprint(accept.device)})`);
@@ -927,8 +954,15 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   }, [log]);
 
   useEffect(() => {
-    if (session && peer) session.setPeer(peer);
-  }, [session, peer]);
+    if (!session || peers.length === 0) return;
+    session.setPeers(peers, (p) => ({
+      ...defaultTransport(p.host ?? host),
+      mode,
+      host: p.host ?? host,
+      port: p.port ?? (Number(port) || DEFAULT_PORT),
+    }));
+    session.setActivePeer(activePeerId);
+  }, [session, peers, activePeerId, mode, host, port]);
 
   useEffect(() => {
     const sub = Notifications.addNotificationResponseReceivedListener(
@@ -1085,7 +1119,17 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       host,
       port: nextPort,
     };
-    session.connect(transport);
+    if (peers.length > 0) {
+      // Multi-host: refresh every paired device's transport, then open all.
+      session.setPeers(peers, (p) => ({
+        ...transport,
+        host: p.host ?? host,
+        port: p.port ?? nextPort,
+      }));
+      session.connectAll();
+    } else {
+      session.connect(transport);
+    }
     void startKeepalive(
       "involvex Sync",
       mode === "lan" ? `LAN ${host}:${port}` : mode,
@@ -1241,8 +1285,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       port: parsed.port,
     };
     await savePeer(next);
-    setPeer(next);
-    session?.setPeer(next);
+    upsertPeer(next, true);
     const nextHost = parsed.host ?? host;
     const nextPort = parsed.port || Number(port) || DEFAULT_PORT;
     if (parsed.host) setHost(parsed.host);
@@ -1255,12 +1298,14 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     });
     log(`paired ${next.name} (${deviceFingerprint(parsed.device)})`);
     if (session && nextHost) {
-      session.connect({
-        ...defaultTransport(nextHost),
-        mode: "lan",
-        host: nextHost,
-        port: nextPort,
-      });
+      session.setPeers([...peers, next], (p) => ({
+        ...defaultTransport(p.host ?? nextHost),
+        mode: "lan" as const,
+        host: p.host ?? nextHost,
+        port: p.port ?? nextPort,
+      }));
+      session.setActivePeer(next.deviceId);
+      session.connectPeer(next.deviceId);
       void startKeepalive("involvex Sync", `LAN ${nextHost}`);
       setStatus(`Paired and connected · ${next.name}`);
     } else {
@@ -1297,11 +1342,52 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     }
   }
 
-  async function onUnpair(): Promise<void> {
-    await clearPeer();
-    session?.clearPeer();
-    setPeer(null);
+  /** Add or refresh one pairing in the list; `active` makes it the send target. */
+  function upsertPeer(next: StoredPeer, active = true): void {
+    setPeers((prev) => {
+      const idx = prev.findIndex((p) => p.deviceId === next.deviceId);
+      return idx >= 0
+        ? prev.map((p, i) => (i === idx ? { ...p, ...next } : p))
+        : [...prev, next];
+    });
+    if (active) setActivePeerId(next.deviceId);
+  }
+
+  async function onUnpair(deviceId?: string): Promise<void> {
+    const target = deviceId ?? activePeerId;
+    if (!target) return;
+    await removePeer(target);
+    setPeers((prev) => {
+      const list = prev.filter((p) => p.deviceId !== target);
+      setActivePeerId((current) =>
+        current === target ? (list[0]?.deviceId ?? null) : current,
+      );
+      return list;
+    });
     log("unpaired");
+  }
+
+  async function onUnpairAll(): Promise<void> {
+    await clearPeers();
+    session?.clearPeer();
+    setPeers([]);
+    setActivePeerId(null);
+    log("all devices removed");
+  }
+
+  function onUsePeer(deviceId: string): void {
+    setActivePeerId(deviceId);
+    sessionRef.current?.setActivePeer(deviceId);
+    const chosen = peers.find((p) => p.deviceId === deviceId);
+    if (chosen) log(`target ${chosen.name}`);
+  }
+
+  function onConnectPeer(deviceId: string): void {
+    const s = sessionRef.current;
+    if (!s) return;
+    s.connectPeer(deviceId);
+    const chosen = peers.find((p) => p.deviceId === deviceId);
+    void startKeepalive("involvex Sync", `LAN ${chosen?.host ?? host}`);
   }
 
   async function copyPairingJson(): Promise<void> {
@@ -1631,6 +1717,9 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   const value: SessionContextValue = {
     identity,
     peer,
+    peers,
+    activePeerId,
+    isPeerOpen: (deviceId) => sessionRef.current?.isPeerOpen(deviceId) ?? false,
     host,
     setHost,
     port,
@@ -1684,6 +1773,9 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     openScanner,
     onScanPayload,
     onUnpair,
+    onUnpairAll,
+    onUsePeer,
+    onConnectPeer,
     copyPairingJson,
     sendClipboardLink,
     resendHistory,

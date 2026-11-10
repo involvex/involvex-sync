@@ -114,6 +114,25 @@ bun run oauth:deploy:prod
 - **Mobile builds:** changes affecting native config/plugins (e.g. cleartext traffic, camera/permissions) require a native rebuild/dev client — Expo Go is not sufficient.
 - **Desktop tray behavior:** minimize/close hides to tray; release/startup behavior is intentional (see `docs/architecture.md`).
 
+### Local ADB (screenshot, shell)
+
+- **Serial targeting is mandatory.** Both `adb_screencap` and `run_adb_shell` accept `serial` and pass `-s <serial>`; with several devices (phone + emulator) an omitted serial fails with "more than one device". `adb_devices` returns the raw `adb devices -l` text and `apps/desktop/src/services/adbDevices.ts` does all parsing/serial selection (`adbDevices.test.ts` covers formats and precedence).
+- **Never read stdout after exit.** Rust drains stdout/stderr on reader threads spawned right after `spawn()` — a multi-MB screencap PNG fills the OS pipe, adb blocks on write, and a parent that only reads after exit deadlocks (this was the original "screenshot always times out" bug).
+- **Saved serials are hints, not identities.** `settings.adbSerial` guides selection but is never trusted: mDNS/TLS serials change on reconnect, so an unusable/absent hint must fall through to auto-detect (`resolveSerial` sets `staleSetting`) rather than error out.
+- **Report real adb errors.** Map failures to actionable text via `describeAdbError` (missing binary, timeout, unauthorized, offline, not-a-PNG) — never a generic "Screenshot failed".
+- **Do not run `adb` against a physical device during development.** `adb devices -l` reads are fine for diagnostics; installs, shell commands, and screencaps are verified by the user on the device.
+
+### Multi-host pairing (full mesh)
+
+- **Peers are a list, never a singleton.** `load_peers`/`save_peer`/`remove_peer` on both platforms; the legacy single-peer key is folded in on first read (seed-on-read) and then deleted. Never add a "the one peer" field back.
+- **Route by identity, not by socket.** `WireFrame.from` is cleartext — pick the decryption key from it. `body.to`, when present, must equal the local device id or the frame is dropped.
+- **One active peer per side** drives clipboard / files / find-phone / remote commands; notes, secrets and the vault key are shared state and fan out to every connected host.
+- **Pair replies go back on the socket they arrived on.** Queue pending pair requests with their conn id; the session maps `deviceId → connId` from inbound frames and sends via `ws_send_to`, so the selected device gets the frame rather than the most recently connected one. Unpairing closes that device's socket (`ws_close`).
+- **Never block the accept loop.** Each desktop socket is its own task; a phone that drops off Wi-Fi does not close its socket, so ping every 15 s and reap after 75 s of silence.
+- **Socket identity is established, not assumed.** The phone sends a `ping` on connect; the desktop records `deviceId → connId` from inbound frames and replies with `ws_send_to`. Never fall back to `ws_send` when more than one device is paired — it addresses the newest socket, not the selected device.
+- **Relay is a fallback for every payload**, not just share links: try LAN first, then the relay.
+- **Phone reconnect uses backoff** (2.5 s → 5 s … 60 s, reset on open) and one socket per paired host.
+
 ### Development workflow
 
 - **Use Bun** for installs and scripts; prefer `bunx` for Expo/EAS tooling in Bun projects.

@@ -29,9 +29,14 @@ export function ConnectionScreen() {
     cancelPairing,
     nearby,
     peer,
+    peers,
+    isPeerOpen,
     pairWithNearby,
     openScanner,
     onUnpair,
+    onUnpairAll,
+    onUsePeer,
+    onConnectPeer,
     showAdvanced,
     setShowAdvanced,
     pairingJson,
@@ -201,9 +206,50 @@ export function ConnectionScreen() {
             );
           })
         )}
-        {peer ? (
-          <Pressable style={styles.linkBtn} onPress={() => void onUnpair()}>
-            <Text style={styles.linkText}>Unpair {peer.name}</Text>
+        {peers.map((p) => {
+          const open = isPeerOpen(p.deviceId);
+          return (
+            <View key={p.deviceId} style={styles.peerRow}>
+              <View style={styles.peerInfo}>
+                <Text style={styles.peerName}>
+                  {p.name}
+                  {p.deviceId === peer?.deviceId ? " · active" : ""}
+                </Text>
+                <Text style={styles.muted}>
+                  {open ? "connected" : "offline"}
+                  {p.host ? ` · ${p.host}:${p.port ?? 17391}` : ""}
+                </Text>
+              </View>
+              <View style={styles.peerActions}>
+                {p.deviceId !== peer?.deviceId ? (
+                  <Pressable
+                    style={styles.linkBtn}
+                    onPress={() => onUsePeer(p.deviceId)}
+                  >
+                    <Text style={styles.linkText}>Use</Text>
+                  </Pressable>
+                ) : null}
+                {!open ? (
+                  <Pressable
+                    style={styles.linkBtn}
+                    onPress={() => onConnectPeer(p.deviceId)}
+                  >
+                    <Text style={styles.linkText}>Connect</Text>
+                  </Pressable>
+                ) : null}
+                <Pressable
+                  style={styles.linkBtn}
+                  onPress={() => void onUnpair(p.deviceId)}
+                >
+                  <Text style={styles.linkText}>Remove</Text>
+                </Pressable>
+              </View>
+            </View>
+          );
+        })}
+        {peers.length > 1 ? (
+          <Pressable style={styles.linkBtn} onPress={() => void onUnpairAll()}>
+            <Text style={styles.linkText}>Forget all devices</Text>
           </Pressable>
         ) : null}
       </View>

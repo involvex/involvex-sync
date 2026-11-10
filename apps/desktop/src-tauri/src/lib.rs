@@ -96,18 +96,25 @@ fn save_device_keys(keys: StoredDeviceKeys) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn load_peer() -> Result<Option<StoredPeer>, String> {
-    keys::load_peer().map_err(|e| e.to_string())
+fn load_peers() -> Result<keys::PeerList, String> {
+    keys::load_peers().map_err(|e| e.to_string())
 }
 
+/// Add or update one pairing; returns the full list so the UI stays in sync.
 #[tauri::command]
-fn save_peer(peer: StoredPeer) -> Result<(), String> {
+fn save_peer(peer: StoredPeer) -> Result<Vec<keys::StoredPeer>, String> {
     keys::save_peer(&peer).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
+fn remove_peer(device_id: String) -> Result<Vec<keys::StoredPeer>, String> {
+    keys::remove_peer(&device_id).map_err(|e| e.to_string())
+}
+
+/// Kept as the single "forget every device" action.
+#[tauri::command]
 fn clear_peer() -> Result<(), String> {
-    keys::clear_peer().map_err(|e| e.to_string())
+    keys::clear_peers().map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -402,11 +409,15 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             get_lan_info,
             ws_send,
+            ws_send_to,
+            ws_conns,
+            ws_close,
             open_allowed_url,
             load_device_keys,
             save_device_keys,
-            load_peer,
+            load_peers,
             save_peer,
+            remove_peer,
             clear_peer,
             load_vault_key,
             save_vault_key,

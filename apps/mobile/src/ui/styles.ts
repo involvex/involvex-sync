@@ -166,6 +166,18 @@ export function makeStyles(c: ThemeColors) {
     },
     linkBtn: { paddingVertical: 2 },
     linkText: { color: c.brand, fontWeight: "600", fontSize: 13 },
+    peerRow: {
+      flexDirection: "row",
+      alignItems: "center",
+      justifyContent: "space-between",
+      gap: 8,
+      paddingVertical: 8,
+      borderBottomWidth: StyleSheet.hairlineWidth,
+      borderBottomColor: c.divider,
+    },
+    peerInfo: { flex: 1, gap: 2 },
+    peerName: { color: c.text, fontSize: 14, fontWeight: "600" },
+    peerActions: { flexDirection: "row", gap: 12, alignItems: "center" },
     chevron: { color: c.textMuted, fontSize: 16 },
     btn: {
       backgroundColor: c.accent,

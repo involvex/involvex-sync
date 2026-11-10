@@ -12,7 +12,7 @@ bun run desktop:build       # release bundle
 
 cd apps/desktop
 bun run check               # bun check (typecheck)
-bun test                    # service-level unit tests (gwsDrive)
+bun test                    # service-level unit tests (adbDevices, session routing)
 ```
 
 Requires Rust, WebView2, and `gws` on `PATH` for Drive features.
@@ -41,6 +41,27 @@ browser.
 
 `gws` prints `Using keyring backend: keyring` on stderr for every call; that
 line is filtered out of error hints, so treat it as noise when debugging.
+
+## Devices
+
+Pairing is full-mesh and stored as a list (`src-tauri/src/keys.rs`:
+`load_peers`/`save_peer`/`remove_peer`/`clear_peers`). The deprecated
+single-peer keyring entry is folded in on first read, so upgrading keeps the
+existing pairing.
+
+`src-tauri/src/ws.rs` keeps one task per socket in a map keyed by conn id:
+
+- `ws_send_to` → one specific socket (the session maps `deviceId → connId` from
+  inbound frames, so the _selected_ device gets the frame, not the newest).
+- `ws_send` → the active (or only) socket; fallback when no mapping is known.
+- `ws_conns` lists live sockets, `ws_close` drops one.
+- Ping every 15 s, peers reaped after 75 s of silence (a phone that drops off
+  Wi-Fi never closes the socket, so this is the only cleanup path).
+- `ws-message` events carry `{ connId, message }` — the conn id is how pair
+  accept/reject and per-device routing work.
+
+Anything outbound (`services/session.ts` `sendRaw`) tries the LAN socket first
+and then the relay, so no payload type is LAN-only.
 
 ## Process spawning
 

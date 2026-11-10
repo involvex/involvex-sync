@@ -3,13 +3,10 @@ import {
   MAX_CHUNKED_FILE_BYTES,
   buildPairingPayload,
   deviceFingerprint,
-  encryptFrame,
   fromBase64,
   pairingQrText,
   parseAllowedUrl,
   parsePairingQr,
-  serializeFrame,
-  shareUrlBody,
   type PairRequestPayload,
   type SecretKind,
 } from "@involvex/protocol";
@@ -50,9 +47,10 @@ import {
 import {
   type StoredDeviceKeys,
   type StoredPeer,
-  clearPeer,
+  clearPeers,
   ensureLocalIdentity,
-  loadPeer,
+  loadPeers,
+  removePeer,
   savePeer,
   toDeviceKeys,
 } from "./services/identity";
@@ -233,7 +231,13 @@ function isDriveFolder(entry: DriveFileEntry): boolean {
 
 export default function App() {
   const [identity, setIdentity] = useState<StoredDeviceKeys | null>(null);
-  const [peer, setPeer] = useState<StoredPeer | null>(null);
+  const [peers, setPeers] = useState<StoredPeer[]>([]);
+  const [activePeerId, setActivePeerId] = useState<string | null>(null);
+  /** Active pairing — the send target for clipboard/files/keys/notes. */
+  const peer = useMemo(
+    () => peers.find((p) => p.deviceId === activePeerId) ?? null,
+    [peers, activePeerId],
+  );
   const [lan, setLan] = useState<LanInfo | null>(null);
   const [qrDataUrl, setQrDataUrl] = useState<string>("");
   const [pairPaste, setPairPaste] = useState("");
@@ -241,6 +245,7 @@ export default function App() {
   const [logs, setLogs] = useState<string[]>([]);
   const [firewallMsg, setFirewallMsg] = useState<string>("");
   const [relayStatus, setRelayStatus] = useState<string>("off");
+  const [relayEnabled, setRelayEnabled] = useState(false);
   const [relay, setRelay] = useState<RelayClient | null>(null);
   const [pendingPair, setPendingPair] = useState<PairRequestPayload | null>(
     null,
@@ -569,20 +574,77 @@ export default function App() {
     if (!session) return;
     const queued = messageQueueRef.current.splice(0);
     for (const raw of queued) {
-      void session.handleIncomingRaw(raw);
+      // Queued frames carry "<connId>\0<message>"; old plain entries still work.
+      const sep = raw.indexOf("\u0000");
+      if (sep > 0) {
+        const connId = Number(raw.slice(0, sep));
+        void session.handleIncomingRaw(
+          raw.slice(sep + 1),
+          Number.isFinite(connId) ? connId : undefined,
+        );
+      } else {
+        void session.handleIncomingRaw(raw);
+      }
     }
   }, [session]);
 
   useEffect(() => {
-    if (session && peer) session.setPeer(peer);
-  }, [session, peer]);
+    if (!session) return;
+    session.setPeers(peers);
+    session.setActivePeer(activePeerId);
+  }, [session, peers, activePeerId]);
+
+  // Load the adb device list once when the user opens the commands tab.
+  useEffect(() => {
+    if (tab !== "commands" || adbLoadedRef.current) return;
+    adbLoadedRef.current = true;
+    void refreshAdbDevices();
+  }, [tab]);
+
+  // Relay socket. Rebuilt when the paired peer changes because the room name
+  // is `localId:peerId` — an old socket would sit in a room nobody else uses.
+  useEffect(() => {
+    if (!relayEnabled) {
+      setRelay(null);
+      setRelayStatus("off");
+      return;
+    }
+    if (!identity) return;
+    const client = new RelayClient(toDeviceKeys(identity), peer?.deviceId, {
+      onMessage: (raw) => {
+        void sessionRef.current?.handleIncomingRaw(raw);
+      },
+      onStatus: (s) => {
+        setRelayStatus(s);
+        log(s);
+      },
+    });
+    client.connect();
+    setRelay(client);
+    return () => {
+      client.disconnect();
+      setRelay(null);
+      setRelayStatus("off");
+    };
+    // `log` is stable (useCallback); listing it would re-create the socket
+    // every time the log list re-renders.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [relayEnabled, identity, peer?.deviceId]);
+
+  // Every encrypted frame can fall back to the relay once one is connected.
+  useEffect(() => {
+    sessionRef.current?.setRelaySender(
+      relay ? (raw: string) => relay.send(raw) : null,
+    );
+  }, [relay, session]);
 
   useEffect(() => {
     void (async () => {
       const id = await ensureLocalIdentity("Windows-PC");
       setIdentity(id);
-      const storedPeer = await loadPeer();
-      setPeer(storedPeer);
+      const storedPeers = await loadPeers();
+      setPeers(storedPeers);
+      if (storedPeers.length > 0) setActivePeerId(storedPeers[0].deviceId);
       const info = await invoke<LanInfo>("get_lan_info");
       setLan(info);
       try {
@@ -627,20 +689,33 @@ export default function App() {
     const unsubs: Array<() => void> = [];
     void (async () => {
       unsubs.push(
-        await listen<string>("ws-message", (event) => {
-          const current = sessionRef.current;
-          if (current) {
-            void current.handleIncomingRaw(event.payload);
-          } else {
-            messageQueueRef.current.push(event.payload);
-            if (messageQueueRef.current.length > 40) {
-              messageQueueRef.current.shift();
+        await listen<{ connId: number; message: string }>(
+          "ws-message",
+          (event) => {
+            const current = sessionRef.current;
+            if (current) {
+              void current.handleIncomingRaw(
+                event.payload.message,
+                event.payload.connId,
+              );
+            } else {
+              // Cold-start queue keeps the raw socket id with the frame.
+              messageQueueRef.current.push(
+                `${event.payload.connId}\u0000${event.payload.message}`,
+              );
+              if (messageQueueRef.current.length > 40) {
+                messageQueueRef.current.shift();
+              }
             }
-          }
-        }),
+          },
+        ),
       );
       unsubs.push(
-        await listen<{ connected: boolean; addr?: string }>("ws-peer", (e) => {
+        await listen<{
+          connected: boolean;
+          addr?: string;
+          connId?: number;
+        }>("ws-peer", (e) => {
           log(
             e.payload.connected
               ? `peer connected ${e.payload.addr ?? ""}`
@@ -650,6 +725,10 @@ export default function App() {
             toast("Phone connected", "ok");
           } else {
             toast("Phone disconnected", "info");
+            // Drop socket→device mappings for the socket that just went away.
+            if (e.payload.connId !== undefined) {
+              sessionRef.current?.forgetConn(e.payload.connId);
+            }
           }
           void invoke<LanInfo>("get_lan_info").then(setLan);
         }),
@@ -1278,22 +1357,37 @@ export default function App() {
       ed25519PublicKey: pendingPair.device.ed25519PublicKey,
       x25519PublicKey: pendingPair.device.x25519PublicKey,
     };
-    await session.acceptPair(
-      pendingPair,
-      lan?.ip ?? undefined,
-      lan?.port || DEFAULT_PORT,
-    );
-    await savePeer(next);
-    session.setPeer(next);
-    setPeer(next);
+    // Persist first: accepting without saving leaves the phone paired to a
+    // desktop that forgets it on restart.
+    try {
+      await savePeer(next);
+    } catch (e) {
+      log(`save peer failed: ${String(e)}`);
+      toast("Could not save pairing", "err");
+      return;
+    }
+    try {
+      await session.acceptPair(
+        pendingPair,
+        lan?.ip ?? undefined,
+        lan?.port || DEFAULT_PORT,
+      );
+    } catch (e) {
+      // The request arrived on a socket that has since died; the saved peer
+      // stays, but the phone never learns it was accepted.
+      log(`accept failed: ${String(e)}`);
+      toast("Could not reach the device to accept", "err");
+      return;
+    }
+    upsertPeer(next, true);
     setPendingPair(null);
     log(`accepted ${next.name}`);
     toast(`Paired with ${next.name}`, "ok");
   }
 
   async function onRejectPair(): Promise<void> {
-    if (!session) return;
-    await session.rejectPair("user rejected");
+    if (!session || !pendingPair) return;
+    await session.rejectPair(pendingPair, "user rejected");
     setPendingPair(null);
     log("pair rejected");
     toast("Pair rejected", "info");
@@ -1314,7 +1408,7 @@ export default function App() {
       x25519PublicKey: parsed.device.x25519PublicKey,
     };
     await savePeer(next);
-    setPeer(next);
+    upsertPeer(next, true);
     log(`paired with ${next.name} (${deviceFingerprint(parsed.device)})`);
     toast(`Paired with ${next.name} — wait for Connect on phone`, "ok");
   }
@@ -1448,12 +1542,63 @@ export default function App() {
     pushHistory,
   ]);
 
-  async function onUnpair(): Promise<void> {
-    await clearPeer();
+  /** Add or refresh one pairing in the list; `active` makes it the send target. */
+  function upsertPeer(next: StoredPeer, active = true): void {
+    setPeers((prev) => {
+      const idx = prev.findIndex((p) => p.deviceId === next.deviceId);
+      const list =
+        idx >= 0
+          ? prev.map((p, i) => (i === idx ? { ...p, ...next } : p))
+          : [...prev, next];
+      return list;
+    });
+    if (active) setActivePeerId(next.deviceId);
+  }
+
+  async function onUnpair(deviceId?: string): Promise<void> {
+    const target = deviceId ?? activePeerId;
+    if (!target) return;
+    // Look up the socket before removing the peer — that drops the mapping.
+    const connId = session?.connIdFor(target);
+    await removePeer(target);
+    if (connId !== undefined) {
+      try {
+        await invoke("ws_close", { connId });
+      } catch (e) {
+        log(`close socket: ${String(e)}`);
+      }
+    }
+    setPeers((prev) => {
+      const list = prev.filter((p) => p.deviceId !== target);
+      setActivePeerId((current) =>
+        current === target ? (list[0]?.deviceId ?? null) : current,
+      );
+      return list;
+    });
+    session?.removePeer(target);
+    log(`unpaired ${target}`);
+    toast("Device removed", "info");
+  }
+
+  async function onUnpairAll(): Promise<void> {
+    await clearPeers();
+    try {
+      const conns = await invoke<Array<{ connId: number }>>("ws_conns");
+      for (const c of conns) {
+        try {
+          await invoke("ws_close", { connId: c.connId });
+        } catch {
+          /* already gone */
+        }
+      }
+    } catch (e) {
+      log(`close sockets: ${String(e)}`);
+    }
+    setPeers([]);
+    setActivePeerId(null);
     session?.clearPeer();
-    setPeer(null);
-    log("peer cleared");
-    toast("Unpaired", "info");
+    log("all peers cleared");
+    toast("All devices removed", "info");
   }
 
   async function onFirewall(): Promise<void> {
@@ -1471,65 +1616,29 @@ export default function App() {
   }
 
   function onRelayToggle(): void {
-    if (relay) {
-      relay.disconnect();
-      setRelay(null);
-      setRelayStatus("off");
-      log("relay stopped");
-      return;
-    }
-    if (!identity || !session) {
-      log("identity not ready");
-      return;
-    }
-    const client = new RelayClient(toDeviceKeys(identity), peer?.deviceId, {
-      onMessage: (raw) => {
-        void session.handleIncomingRaw(raw);
-      },
-      onStatus: (s) => {
-        setRelayStatus(s);
-        log(s);
-      },
-    });
-    client.connect();
-    setRelay(client);
+    const next = !relayEnabled;
+    setRelayEnabled(next);
+    log(next ? "relay starting…" : "relay stopped");
   }
 
   async function onSendLinkRelayAware(): Promise<void> {
-    if (!session || !identity) return;
+    if (!session) return;
     const url = parseAllowedUrl(sendUrl);
     if (!url) {
       log("url not allowed");
       toast("URL not allowed", "err");
       return;
     }
-    if (live) {
-      try {
-        await session.sendShareUrl(url);
-        pushHistory(url, "out");
-        log(`sent link via LAN ${url}`);
-        toast("Link sent", "ok");
-        return;
-      } catch (e) {
-        log(`LAN send failed: ${String(e)}`);
-      }
+    // sendBody already falls back to the relay when LAN is down.
+    try {
+      await session.sendShareUrl(url);
+      pushHistory(url, "out");
+      log(`sent link ${url}`);
+      toast("Link sent", "ok");
+    } catch (e) {
+      log(`send failed: ${String(e)}`);
+      toast("Send failed — phone not connected", "err");
     }
-    if (!relay || !peer) {
-      log("LAN send failed and relay not connected");
-      toast("Phone not connected — open Sync and tap Connect", "err");
-      return;
-    }
-    const body = shareUrlBody(identity.deviceId, url, peer.deviceId);
-    if (!body) return;
-    const frame = encryptFrame(body, toDeviceKeys(identity), {
-      deviceId: peer.deviceId,
-      ed25519PublicKey: peer.ed25519PublicKey,
-      x25519PublicKey: peer.x25519PublicKey,
-    });
-    relay.send(serializeFrame(frame));
-    pushHistory(url, "out");
-    log(`sent link via relay ${url}`);
-    toast("Link sent via relay", "ok");
   }
 
   async function onFindPhone(): Promise<void> {
@@ -1848,9 +1957,11 @@ export default function App() {
               <span className="dot" />
               {live
                 ? `Live · ${lan?.status.peerAddr ?? peer?.name}`
-                : peer
-                  ? "Paired · offline"
-                  : "No peer"}
+                : peers.length > 1
+                  ? `${peers.length} devices · offline`
+                  : peer
+                    ? "Paired · offline"
+                    : "No peer"}
             </span>
           </div>
         </header>
@@ -1919,28 +2030,81 @@ export default function App() {
             </article>
 
             <article className="card">
-              <h2>Paired phone</h2>
-              {peer ? (
+              <h2>Paired devices</h2>
+              {peers.length === 0 ? (
+                <p className="muted">
+                  No devices yet — wait for a LAN pair request or paste JSON.
+                </p>
+              ) : (
                 <>
-                  <p>
-                    <strong>{peer.name}</strong> ({peer.deviceType})
-                  </p>
-                  <p className="mono small">{peer.deviceId}</p>
-                  <p className={live ? "status-ok" : "muted small"}>
-                    {live ? "Connected" : "Offline — Connect on phone"}
-                  </p>
+                  <label className="stack">
+                    Active device
+                    <select
+                      value={activePeerId ?? ""}
+                      onChange={(e) => {
+                        const id = e.target.value;
+                        setActivePeerId(id || null);
+                        const chosen = peers.find((p) => p.deviceId === id);
+                        if (chosen) log(`target ${chosen.name}`);
+                      }}
+                    >
+                      {peers.map((p) => (
+                        <option key={p.deviceId} value={p.deviceId}>
+                          {p.name} ({p.deviceType})
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <ul className="peer-list">
+                    {peers.map((p) => {
+                      const isActive = p.deviceId === activePeerId;
+                      return (
+                        <li
+                          key={p.deviceId}
+                          className={isActive ? "on" : undefined}
+                        >
+                          <div>
+                            <strong>{p.name}</strong> ({p.deviceType})
+                            {isActive ? (
+                              <span className="tag">active</span>
+                            ) : null}
+                            <p className="mono small">{p.deviceId}</p>
+                            <p className="muted small">
+                              {live && isActive
+                                ? "Connected"
+                                : "Offline — Connect on this device"}
+                            </p>
+                          </div>
+                          <div className="row">
+                            {!isActive ? (
+                              <button
+                                type="button"
+                                className="ghost"
+                                onClick={() => setActivePeerId(p.deviceId)}
+                              >
+                                Use
+                              </button>
+                            ) : null}
+                            <button
+                              type="button"
+                              className="ghost"
+                              onClick={() => void onUnpair(p.deviceId)}
+                            >
+                              Remove
+                            </button>
+                          </div>
+                        </li>
+                      );
+                    })}
+                  </ul>
                   <button
                     type="button"
                     className="ghost"
-                    onClick={() => void onUnpair()}
+                    onClick={() => void onUnpairAll()}
                   >
-                    Unpair
+                    Forget all devices
                   </button>
                 </>
-              ) : (
-                <p className="muted">
-                  No peer yet — wait for a LAN pair request or paste JSON.
-                </p>
               )}
               <details>
                 <summary>Manual JSON pair</summary>

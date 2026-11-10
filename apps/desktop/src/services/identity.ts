@@ -14,15 +14,10 @@ export type StoredPeer = {
   deviceType: string;
   ed25519PublicKey: string;
   x25519PublicKey: string;
+  /** Last LAN address this peer was reached on. */
+  host?: string;
+  port?: number;
 };
-
-export function toDeviceKeys(stored: StoredDeviceKeys): DeviceKeys {
-  return {
-    deviceId: stored.deviceId,
-    ed25519: stored.ed25519,
-    x25519: stored.x25519,
-  };
-}
 
 export async function ensureLocalIdentity(
   defaultName: string,
@@ -41,14 +36,42 @@ export async function ensureLocalIdentity(
   return stored;
 }
 
-export async function loadPeer(): Promise<StoredPeer | null> {
-  return invoke<StoredPeer | null>("load_peer");
+export function toDeviceKeys(stored: StoredDeviceKeys): DeviceKeys {
+  return {
+    deviceId: stored.deviceId,
+    ed25519: stored.ed25519,
+    x25519: stored.x25519,
+  };
 }
 
-export async function savePeer(peer: StoredPeer): Promise<void> {
-  await invoke("save_peer", { peer });
+export type PeerLoadResult = {
+  peers: StoredPeer[];
+  /** True when a legacy single-peer keyring entry was folded in. */
+  migrated: boolean;
+};
+
+/** All paired devices (phone + second PC + laptop). */
+export async function loadPeers(): Promise<StoredPeer[]> {
+  const result = await invoke<PeerLoadResult>("load_peers");
+  return result.peers;
 }
 
-export async function clearPeer(): Promise<void> {
+export async function savePeer(peer: StoredPeer): Promise<StoredPeer[]> {
+  return invoke<StoredPeer[]>("save_peer", { peer });
+}
+
+export async function removePeer(deviceId: string): Promise<StoredPeer[]> {
+  return invoke<StoredPeer[]>("remove_peer", { deviceId });
+}
+
+export async function clearPeers(): Promise<void> {
   await invoke("clear_peer");
+}
+
+export async function touchPeer(
+  deviceId: string,
+  host: string,
+  port: number,
+): Promise<void> {
+  await invoke("touch_peer", { deviceId, host, port });
 }

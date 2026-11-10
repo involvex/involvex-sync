@@ -51,9 +51,39 @@ bun run isync -- keyboard key enter
 ```
 
 Desktop **Screenshot** (Send / Commands): `adb exec-out screencap -p` → PC
-clipboard image. Needs `adb` on PATH and an authorized device.
+clipboard image. Needs `adb` on PATH and an authorized device. The Commands tab
+has a device picker (auto-detect + Refresh) that lists every `adb devices -l`
+entry with its transport (USB / Wi-Fi / mDNS-TLS / emulator) and state; the
+choice is stored in settings as `adbSerial`. Auto-detect picks the single
+connected device and falls back automatically when a saved serial disappears
+(mDNS/TLS serials rotate whenever the phone reconnects).
 
 Install a global shim (optional): `bun link --cwd apps/cli` then `isync status`.
+
+### Pairing several devices
+
+Pairing is full-mesh: every device pairs with every other one (phone + PC +
+laptop is the supported setup). Each pairing is independent and stored in a
+list — an old install's single pairing is picked up automatically on first run.
+
+- **Desktop:** Connection tab → _Paired devices_ → pick the **active** device
+  (dropdown, or _Use_ on a row). Clipboard, files, find-phone and remote
+  commands go to the active device; notes, secrets and the vault key are shared
+  and go to every connected host. _Remove_ forgets one device,
+  _Forget all devices_ clears the list.
+- **Phone:** Connection screen lists every paired host with its live state;
+  _Use_ picks the send target, _Connect_ opens one host, _Remove_ unpairs it.
+  One socket per host, each with its own reconnect backoff.
+- **Relay:** when away, the relay carries every payload type (not just links),
+  falling back automatically when the LAN socket is unavailable.
+
+Existing single-device setups keep working: the only pairing becomes the
+active peer.
+
+The desktop only _listens_ on the LAN, it never dials out. So the phone is the
+device that dials both PCs; a PC↔PC link uses the relay (both sides dial the
+same pair room). Everything else — pairing, encryption, notes, secrets, vault
+key — is symmetric.
 
 ### Mobile (Android)
 

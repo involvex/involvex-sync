@@ -273,6 +273,46 @@ body {
   gap: 0.5rem;
 }
 
+.peer-list {
+  list-style: none;
+  margin: 0.75rem 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.peer-list li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0.6rem 0.7rem;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: var(--input-bg);
+}
+
+.peer-list li.on {
+  border-color: var(--accent);
+}
+
+.peer-list .tag {
+  margin-left: 0.4rem;
+  padding: 0.05rem 0.4rem;
+  border-radius: 999px;
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  background: var(--accent);
+  color: white;
+}
+
+.peer-list p {
+  margin: 0.15rem 0 0;
+}
+
 .panel-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));

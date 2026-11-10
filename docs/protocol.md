@@ -51,6 +51,11 @@ PC only). Both sides require an explicit allow setting. Cap 2000 chars.
 
 Signature input UTF-8: `v{version}|{from}|{nonce}|{ciphertext}`.
 
+`from` is cleartext on purpose: with several paired devices the receiver picks
+the decryption key by sender identity instead of guessing. `to` is optional;
+when present it must equal the receiver's own device id or the frame is
+dropped (a device in a full mesh can receive frames addressed elsewhere).
+
 ## URL allowlist
 
 Only `http:` and `https:` without embedded credentials. `file:`, `javascript:`,

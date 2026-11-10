@@ -49,8 +49,11 @@ import {
   vaultKeyShareBody,
 } from "@involvex/protocol";
 import { invoke } from "@tauri-apps/api/core";
-import type { StoredPeer } from "./identity";
-import { type StoredDeviceKeys, toDeviceKeys } from "./identity";
+import {
+  type StoredDeviceKeys,
+  type StoredPeer,
+  toDeviceKeys,
+} from "./identity";
 
 export type RemoteCommandRequest = {
   requestId: string;
@@ -134,10 +137,29 @@ export type SessionHandlers = {
 export class SyncSession {
   readonly local: DeviceKeys;
   readonly loop = new LoopGuard();
+  /** Active peer — everything outbound is sealed for this device. */
   peer: PeerPublicKeys | null = null;
   private handlers: SessionHandlers;
   private identityMeta: { name: string; type: DeviceType };
-  private pendingPairDeviceId: string | null = null;
+  /** Every paired device, keyed by device id. */
+  private peerMap = new Map<string, PeerPublicKeys>();
+  private activePeerId: string | null = null;
+  /**
+   * deviceId → local socket id. The WS hub addresses sockets, the session
+   * addresses devices, so outbound frames need this translation; without it
+   * `ws_send` would always hit the most recently connected socket instead of
+   * the device the user selected.
+   */
+  private connByDevice = new Map<string, number>();
+  /**
+   * Pair requests waiting for a decision, each tagged with the socket it
+   * arrived on: the accept/reject must go back the same way.
+   */
+  private pendingPairs: Array<{
+    request: PairRequestPayload;
+    connId?: number;
+  }> = [];
+  private relaySend: ((raw: string) => void) | null = null;
   private assemblers = new Map<string, ChunkAssembler>();
 
   constructor(stored: StoredDeviceKeys, handlers: SessionHandlers) {
@@ -146,23 +168,120 @@ export class SyncSession {
     this.identityMeta = { name: stored.name, type: "windows" };
   }
 
-  setPeer(peer: StoredPeer): void {
-    this.peer = {
+  /** Replace the whole paired set; keeps the active peer when possible. */
+  setPeers(peers: StoredPeer[]): void {
+    this.peerMap = new Map(
+      peers.map((p) => [
+        p.deviceId,
+        {
+          deviceId: p.deviceId,
+          ed25519PublicKey: p.ed25519PublicKey,
+          x25519PublicKey: p.x25519PublicKey,
+        },
+      ]),
+    );
+    if (this.activePeerId && this.peerMap.has(this.activePeerId)) {
+      this.peer = this.peerMap.get(this.activePeerId) ?? null;
+      this.pruneConns();
+      return;
+    }
+    const first = this.peerMap.keys().next();
+    this.activePeerId = first.done ? null : first.value;
+    this.peer = this.activePeerId
+      ? (this.peerMap.get(this.activePeerId) ?? null)
+      : null;
+    this.pruneConns();
+  }
+
+  /** Drop socket mappings for devices that are no longer paired. */
+  private pruneConns(): void {
+    for (const deviceId of this.connByDevice.keys()) {
+      if (!this.peerMap.has(deviceId)) this.connByDevice.delete(deviceId);
+    }
+  }
+
+  /** Upsert one pairing. `active` makes it the send target. */
+  addPeer(peer: StoredPeer, active = false): void {
+    this.peerMap.set(peer.deviceId, {
       deviceId: peer.deviceId,
       ed25519PublicKey: peer.ed25519PublicKey,
       x25519PublicKey: peer.x25519PublicKey,
-    };
+    });
+    if (active) this.setActivePeer(peer.deviceId);
+  }
+
+  setActivePeer(deviceId: string | null): void {
+    if (deviceId && !this.peerMap.has(deviceId)) return;
+    this.activePeerId = deviceId;
+    this.peer = deviceId ? (this.peerMap.get(deviceId) ?? null) : null;
+  }
+
+  get activeDeviceId(): string | null {
+    return this.activePeerId;
+  }
+
+  get peerIds(): string[] {
+    return [...this.peerMap.keys()];
+  }
+
+  removePeer(deviceId: string): void {
+    this.peerMap.delete(deviceId);
+    this.connByDevice.delete(deviceId);
+    if (this.activePeerId === deviceId) {
+      const next = this.peerMap.keys().next();
+      this.activePeerId = next.done ? null : next.value;
+      this.peer = this.activePeerId
+        ? (this.peerMap.get(this.activePeerId) ?? null)
+        : null;
+    }
+  }
+
+  setPeer(peer: StoredPeer): void {
+    this.addPeer(peer, true);
   }
 
   clearPeer(): void {
+    this.peerMap.clear();
+    this.connByDevice.clear();
+    this.activePeerId = null;
     this.peer = null;
+    this.pendingPairs = [];
   }
 
-  async handleIncomingRaw(raw: string): Promise<void> {
+  /** Socket id a device was last heard on, for targeted sends / cleanup. */
+  connIdFor(deviceId: string): number | undefined {
+    return this.connByDevice.get(deviceId);
+  }
+
+  /** Forget every mapping that pointed at a socket the hub just dropped. */
+  forgetConn(connId: number): void {
+    for (const [deviceId, id] of this.connByDevice) {
+      if (id === connId) this.connByDevice.delete(deviceId);
+    }
+  }
+
+  /**
+   * Relay fallback used when the LAN socket cannot carry the frame.
+   * Null (default) = LAN only, matching the pre-relay behavior.
+   */
+  setRelaySender(send: ((raw: string) => void) | null): void {
+    this.relaySend = send;
+  }
+
+  async handleIncomingRaw(raw: string, connId?: number): Promise<void> {
     const handshake = parsePairHandshake(raw);
     if (handshake) {
       if (handshake.kind === "involvex-sync-pair-request") {
-        this.pendingPairDeviceId = handshake.device.deviceId;
+        const deviceId = handshake.device.deviceId;
+        const existing = this.pendingPairs.find(
+          (p) => p.request.device.deviceId === deviceId,
+        );
+        if (!existing) {
+          this.pendingPairs.push({ request: handshake, connId });
+        }
+        if (connId !== undefined) {
+          this.connByDevice.set(deviceId, connId);
+        }
         await this.handlers.onPairRequest?.(handshake);
         return;
       }
@@ -178,16 +297,89 @@ export class SyncSession {
       this.handlers.onLog("drop: invalid frame json");
       return;
     }
-    const result = decryptFrame(frame, this.local, this.peer);
+    // The outer envelope carries the sender in the clear, so with several
+    // paired devices the right key is picked instead of guessing.
+    const peer = this.peerMap.get(frame.from);
+    if (!peer) {
+      this.handlers.onLog(`drop: unknown sender ${frame.from}`);
+      return;
+    }
+    const result = decryptFrame(frame, this.local, peer);
     if (!result.ok) {
       this.handlers.onLog(`drop: ${result.error}`);
+      return;
+    }
+    // Remember which socket this device is on so replies go back to it.
+    if (connId !== undefined) {
+      this.connByDevice.set(frame.from, connId);
+    }
+    // Optional target field: reject frames aimed at another device of ours.
+    if (result.body.to && result.body.to !== this.local.deviceId) {
+      this.handlers.onLog(
+        `drop: addressed to ${result.body.to}, not ${this.local.deviceId}`,
+      );
       return;
     }
     await this.dispatch(result.body);
   }
 
+  /**
+   * LAN first, relay second. The relay owns the same encrypted frame, so no
+   * payload is special-cased: clipboard, files, notes, keyboard, links and
+   * commands all travel either way.
+   */
+  private async sendRaw(raw: string, connId?: number): Promise<void> {
+    const peerId = this.peer?.deviceId;
+    // Prefer the exact socket the active peer is on: `ws_send` alone would
+    // deliver to the most recently connected device, not the selected one.
+    const target =
+      connId ?? (peerId ? this.connByDevice.get(peerId) : undefined);
+    if (target !== undefined) {
+      try {
+        await invoke("ws_send_to", { connId: target, message: raw });
+        return;
+      } catch (e) {
+        // The socket died (reconnect in progress) — forget it, use the relay.
+        if (peerId) this.connByDevice.delete(peerId);
+        return this.sendViaRelay(raw, e);
+      }
+    }
+
+    // No mapping for the active peer. `ws_send` is only safe while a single
+    // device is paired; with several it could reach the wrong socket, so go
+    // straight to the relay, which is addressed per peer.
+    if (this.peerMap.size > 1) {
+      return this.sendViaRelay(
+        raw,
+        "active device socket unknown (several devices paired)",
+      );
+    }
+
+    try {
+      await invoke("ws_send", { message: raw });
+      return;
+    } catch (e) {
+      return this.sendViaRelay(raw, e);
+    }
+  }
+
+  private sendViaRelay(raw: string, lanError: unknown): Promise<void> {
+    const reason =
+      lanError instanceof Error ? lanError : new Error(String(lanError));
+    if (!this.relaySend) return Promise.reject(reason);
+    this.handlers.onLog(
+      `relay: LAN send failed (${String(lanError)}), using relay`,
+    );
+    try {
+      this.relaySend(raw);
+      return Promise.resolve();
+    } catch (e) {
+      return Promise.reject(e instanceof Error ? e : new Error(String(e)));
+    }
+  }
+
   async acceptPair(
-    _request: PairRequestPayload,
+    request: PairRequestPayload,
     host?: string,
     port?: number,
   ): Promise<void> {
@@ -198,19 +390,32 @@ export class SyncSession {
       host,
       port,
     );
-    await invoke("ws_send", { message: JSON.stringify(accept) });
-    this.pendingPairDeviceId = null;
+    const pending = this.pendingPairs.find(
+      (p) => p.request.device.deviceId === request.device.deviceId,
+    );
+    await this.sendRaw(JSON.stringify(accept), pending?.connId);
+    this.pendingPairs = this.pendingPairs.filter(
+      (p) => p.request.device.deviceId !== request.device.deviceId,
+    );
   }
 
-  async rejectPair(reason?: string): Promise<void> {
-    const deviceId = this.pendingPairDeviceId ?? this.local.deviceId;
+  async rejectPair(
+    request: PairRequestPayload,
+    reason?: string,
+  ): Promise<void> {
+    const pending = this.pendingPairs.find(
+      (p) => p.request.device.deviceId === request.device.deviceId,
+    );
+    const deviceId = request.device.deviceId;
     const reject = buildPairReject(deviceId, reason);
     try {
-      await invoke("ws_send", { message: JSON.stringify(reject) });
+      await this.sendRaw(JSON.stringify(reject), pending?.connId);
     } catch {
       /* peer may already be gone */
     }
-    this.pendingPairDeviceId = null;
+    this.pendingPairs = this.pendingPairs.filter(
+      (p) => p.request.device.deviceId !== request.device.deviceId,
+    );
   }
 
   private async dispatch(body: MessageBody): Promise<void> {
@@ -399,7 +604,7 @@ export class SyncSession {
   private async sendBody(body: MessageBody): Promise<void> {
     if (!this.peer) throw new Error("no peer paired");
     const frame = encryptFrame(body, this.local, this.peer);
-    await invoke("ws_send", { message: serializeFrame(frame) });
+    await this.sendRaw(serializeFrame(frame));
   }
 
   async sendShareUrl(urlInput: string): Promise<void> {
