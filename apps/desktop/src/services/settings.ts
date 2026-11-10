@@ -25,6 +25,8 @@ export type DesktopSettings = {
   autoClipboardImages: boolean;
   /** Appearance preference. Default system. */
   theme: ThemePreference;
+  /** Preferred adb device serial. Empty = auto-pick (hint only; mDNS serials change on reconnect). */
+  adbSerial: string;
 };
 
 const defaults: DesktopSettings = {
@@ -39,6 +41,7 @@ const defaults: DesktopSettings = {
   autoClipboardSync: false,
   autoClipboardImages: true,
   theme: "system",
+  adbSerial: "",
 };
 
 function parseTheme(value: unknown): ThemePreference {

@@ -295,6 +295,20 @@ textarea {
   padding: 0.55rem 0.7rem;
 }
 
+select {
+  flex: 1 1 12rem;
+  min-width: 0;
+  border-radius: 10px;
+  border: 1px solid var(--border-strong);
+  background: var(--input-bg);
+  color: inherit;
+  padding: 0.55rem 0.7rem;
+}
+
+select:disabled {
+  opacity: 0.5;
+}
+
 button {
   border: 0;
   border-radius: 10px;

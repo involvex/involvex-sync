@@ -89,6 +89,15 @@ import {
   type DesktopSettings,
 } from "./services/settings";
 import {
+  describeAdbError,
+  describeResolution,
+  deviceLabel,
+  isUsableForCapture,
+  loadAdbDevices,
+  resolveSerial,
+  type AdbDevice,
+} from "./services/adbDevices";
+import {
   applyPeerNoteDelete,
   applyPeerNoteUpsert,
   clearPendingNoteOps,
@@ -256,6 +265,9 @@ export default function App() {
   const [adbCmd, setAdbCmd] = useState("");
   const [cmdOutput, setCmdOutput] = useState("");
   const [screenshotBusy, setScreenshotBusy] = useState(false);
+  const [adbDevices, setAdbDevices] = useState<AdbDevice[]>([]);
+  const [adbDevicesBusy, setAdbDevicesBusy] = useState(false);
+  const [adbDevicesError, setAdbDevicesError] = useState("");
   const [folderSyncStatus, setFolderSyncStatus] = useState("off");
   const [folderSyncLast, setFolderSyncLast] = useState("");
   const [driveSyncStatus, setDriveSyncStatus] = useState("off");
@@ -286,6 +298,7 @@ export default function App() {
   const driveSyncLedgerRef = useRef<DriveSyncLedger>(loadDriveLedger());
   const driveSyncQueueRef = useRef<FolderSyncReady[]>([]);
   const driveSyncBusyRef = useRef(false);
+  const adbLoadedRef = useRef(false);
   const sendClipboardRef = useRef<() => Promise<void>>(async () => {});
 
   useEffect(() => {
@@ -1657,27 +1670,77 @@ export default function App() {
     }
   }
 
+  /**
+   * Snapshot the adb device list and pick the serial to target. Precedence:
+   * saved setting → single connected device → explicit pick required.
+   */
+  async function resolveAdbTarget(): Promise<{
+    serial: string | null;
+    message: string;
+    stale: boolean;
+  }> {
+    let devices: AdbDevice[];
+    try {
+      devices = await loadAdbDevices();
+    } catch (e) {
+      return { serial: null, message: describeAdbError(e), stale: false };
+    }
+    setAdbDevices(devices);
+    const res = resolveSerial(devices, {
+      preferred: settingsRef.current.adbSerial,
+    });
+    if (res.staleSetting) {
+      log("adb: saved serial unavailable — re-resolving device");
+    }
+    return {
+      serial: res.serial,
+      message: describeResolution(res),
+      stale: res.staleSetting,
+    };
+  }
+
+  async function refreshAdbDevices(): Promise<void> {
+    setAdbDevicesBusy(true);
+    try {
+      const devices = await loadAdbDevices();
+      setAdbDevices(devices);
+      setAdbDevicesError("");
+    } catch (e) {
+      setAdbDevices([]);
+      setAdbDevicesError(describeAdbError(e));
+    } finally {
+      setAdbDevicesBusy(false);
+    }
+  }
+
   async function onRunAdb(): Promise<void> {
     if (!adbCmd.trim()) {
       toast("Empty adb command", "err");
+      return;
+    }
+    const target = await resolveAdbTarget();
+    if (!target.serial) {
+      setCmdOutput(target.message);
+      toast(target.message, "err");
       return;
     }
     try {
       const result = await invoke<ShellResult>("run_adb_shell", {
         command: adbCmd.trim(),
         timeoutMs: 30_000,
+        serial: target.serial,
       });
       setCmdOutput(
         [result.stdout, result.stderr].filter(Boolean).join("\n") ||
           `(exit ${result.exitCode ?? "?"})`,
       );
-      log(`adb ${result.ok ? "ok" : "fail"}`);
+      log(`adb ${result.ok ? "ok" : "fail"} -s ${target.serial}`);
       toast(result.ok ? "ADB ok" : "ADB failed", result.ok ? "ok" : "err");
     } catch (e) {
-      const msg = String(e);
+      const msg = describeAdbError(e);
       setCmdOutput(msg);
       log(`adb: ${msg}`);
-      toast("ADB failed (is adb on PATH?)", "err");
+      toast(msg, "err");
     }
   }
 
@@ -1685,7 +1748,14 @@ export default function App() {
     if (screenshotBusy) return;
     setScreenshotBusy(true);
     try {
-      const path = await invoke<string>("adb_screencap", { timeoutMs: 20_000 });
+      const target = await resolveAdbTarget();
+      if (!target.serial) {
+        throw new Error(target.message || "no adb device");
+      }
+      const path = await invoke<string>("adb_screencap", {
+        timeoutMs: 20_000,
+        serial: target.serial,
+      });
       await writeImage(path);
       log(`screenshot → clipboard (${path})`);
       toast("Screenshot copied to clipboard", "ok");
@@ -1712,14 +1782,26 @@ export default function App() {
         }
       }
     } catch (e) {
-      const msg = String(e);
+      const msg = describeAdbError(e);
       log(`screenshot: ${msg}`);
-      toast("Screenshot failed (USB debugging / adb?)", "err");
+      toast(msg, "err");
       setCmdOutput(msg);
     } finally {
       setScreenshotBusy(false);
     }
   }
+
+  /** Select value: fall back to Auto when the saved serial isn't connected. */
+  const adbSelectedSerial =
+    settings.adbSerial &&
+    adbDevices.some((d) => d.serial === settings.adbSerial)
+      ? settings.adbSerial
+      : "";
+  const adbStaleSetting =
+    Boolean(settings.adbSerial) &&
+    !adbDevicesBusy &&
+    adbDevices.length > 0 &&
+    !adbDevices.some((d) => d.serial === settings.adbSerial);
 
   const offlineHint =
     "Phone not connected — open Sync on the phone and tap Connect.";
@@ -2611,6 +2693,49 @@ export default function App() {
               <p className="muted small">
                 Runs <code>adb shell …</code> on this PC (USB/Wi‑Fi debugging).
               </p>
+              <label className="stack">
+                Device
+                <div className="row">
+                  <select
+                    value={adbSelectedSerial}
+                    onChange={(e) => {
+                      const serial = e.target.value;
+                      const next = saveSettings({ adbSerial: serial });
+                      setSettings(next);
+                    }}
+                    disabled={adbDevicesBusy}
+                  >
+                    <option value="">Auto (single connected device)</option>
+                    {adbDevices.map((d) => (
+                      <option key={d.serial} value={d.serial}>
+                        {deviceLabel(d)}
+                      </option>
+                    ))}
+                  </select>
+                  <button
+                    type="button"
+                    className="ghost"
+                    disabled={adbDevicesBusy}
+                    onClick={() => void refreshAdbDevices()}
+                  >
+                    {adbDevicesBusy ? "…" : "Refresh"}
+                  </button>
+                </div>
+              </label>
+              {adbDevicesError ? (
+                <p className="status-err small">{adbDevicesError}</p>
+              ) : adbStaleSetting ? (
+                <p className="muted small">
+                  Saved serial {settings.adbSerial} is not connected — using
+                  auto-detection.
+                </p>
+              ) : null}
+              {adbDevices.length > 0 && !adbDevicesBusy ? (
+                <p className="muted small">
+                  {adbDevices.filter(isUsableForCapture).length} of{" "}
+                  {adbDevices.length} device(s) ready
+                </p>
+              ) : null}
               <div className="row">
                 <button
                   type="button"

@@ -208,8 +208,13 @@ fn run_pwsh(command: String, timeout_ms: Option<u64>) -> Result<shell::CommandRe
 fn run_adb_shell(
     command: String,
     timeout_ms: Option<u64>,
+    serial: Option<String>,
 ) -> Result<shell::CommandResult, String> {
-    shell::run_adb_shell(&command, timeout_ms.unwrap_or(30_000))
+    shell::run_adb_shell(
+        &command,
+        timeout_ms.unwrap_or(30_000),
+        serial.as_deref(),
+    )
 }
 
 #[tauri::command]
@@ -220,9 +225,18 @@ fn run_gws(
     shell::run_gws(&args, timeout_ms.unwrap_or(120_000))
 }
 
+/// Raw `adb devices -l` output; parsed in TS (services/adbDevices.ts).
 #[tauri::command]
-fn adb_screencap(timeout_ms: Option<u64>) -> Result<String, String> {
-    shell::adb_screencap_png(timeout_ms.unwrap_or(20_000))
+fn adb_devices(timeout_ms: Option<u64>) -> Result<String, String> {
+    shell::adb_devices_raw(timeout_ms.unwrap_or(10_000))
+}
+
+#[tauri::command]
+fn adb_screencap(
+    timeout_ms: Option<u64>,
+    serial: Option<String>,
+) -> Result<String, String> {
+    shell::adb_screencap_png(timeout_ms.unwrap_or(30_000), serial.as_deref())
 }
 
 fn show_main_window(app: &AppHandle) {
@@ -384,6 +398,7 @@ pub fn run() {
             run_pwsh,
             run_adb_shell,
             run_gws,
+            adb_devices,
             adb_screencap,
             show_main_window_cmd,
             start_folder_sync,
