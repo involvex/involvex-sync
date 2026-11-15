@@ -1,5 +1,6 @@
 import { type DeviceKeys, generateDeviceKeys } from "@involvex/protocol";
 import * as SecureStore from "expo-secure-store";
+import { foldLegacyPeer } from "./peerMigration";
 
 const KEYS = "invx.device.keys";
 /** Deprecated single-peer slot; read once for migration. */
@@ -68,13 +69,9 @@ export async function loadPeers(): Promise<StoredPeer[]> {
   if (legacyRaw) {
     try {
       const legacy = JSON.parse(legacyRaw) as StoredPeer;
-      if (
-        legacy.deviceId &&
-        !peers.some((p) => p.deviceId === legacy.deviceId)
-      ) {
-        peers.push(legacy);
-        await writePeers(peers);
-      }
+      const folded = foldLegacyPeer(peers, legacy);
+      peers = folded.peers;
+      if (folded.migrated) await writePeers(peers);
     } catch {
       /* malformed legacy entry — drop it */
     }

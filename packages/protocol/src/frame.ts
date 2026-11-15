@@ -381,6 +381,20 @@ export function remoteCommandResultBody(
   );
 }
 
+export function adbScreencapRequestBody(
+  from: string,
+  requestId: string,
+  to?: string,
+): MessageBody | null {
+  const id = requestId.trim();
+  if (!id) return null;
+  return createMessageBody(
+    from,
+    { type: "adb_screencap_request", requestId: id.slice(0, 64) },
+    to,
+  );
+}
+
 export function noteUpsertBody(
   from: string,
   note: { id: string; title: string; body: string; updatedAt: number },

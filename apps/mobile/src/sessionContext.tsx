@@ -229,6 +229,7 @@ export type SessionContextValue = {
   pickAndSendFile: () => Promise<void>;
   sendPendingFiles: () => Promise<void>;
   runPwshOnPc: () => void;
+  requestPcScreenshot: () => void;
   onPair: () => Promise<void>;
   openScanner: () => Promise<void>;
   onScanPayload: (data: string) => Promise<void>;
@@ -954,7 +955,9 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   }, [log]);
 
   useEffect(() => {
-    if (!session || peers.length === 0) return;
+    if (!session) return;
+    // Empty list must reach setPeers so unpairing the last host closes its
+    // socket; skipping that left a dangling WebSocket after the final unpair.
     session.setPeers(peers, (p) => ({
       ...defaultTransport(p.host ?? host),
       mode,
@@ -1266,6 +1269,21 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       log(`pwsh → PC: ${pwshCmd.trim()}`);
     } catch (e) {
       log(`pwsh send: ${String(e)}`);
+    }
+  }
+
+  function requestPcScreenshot(): void {
+    const s = sessionRef.current;
+    if (!s?.isOpen) {
+      log("not connected");
+      return;
+    }
+    try {
+      s.sendAdbScreencapRequest();
+      setCmdOutput("Screenshot requested from PC…");
+      log("adb screencap → PC");
+    } catch (e) {
+      log(`screencap request: ${String(e)}`);
     }
   }
 
@@ -1769,6 +1787,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     pickAndSendFile,
     sendPendingFiles,
     runPwshOnPc,
+    requestPcScreenshot,
     onPair,
     openScanner,
     onScanPayload,

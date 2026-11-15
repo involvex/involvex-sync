@@ -27,6 +27,14 @@ export type DesktopSettings = {
   theme: ThemePreference;
   /** Preferred adb device serial. Empty = auto-pick (hint only; mDNS serials change on reconnect). */
   adbSerial: string;
+  /** Absolute path to scrcpy.exe (empty = PATH / Escrcpy bundle / ESCRCPY_SCRCPY). */
+  scrcpyPath: string;
+  /** Absolute path to Escrcpy.exe (empty = PATH / common install dirs). */
+  escrcpyExePath: string;
+  /** Extra scrcpy CLI flags, space-separated (e.g. `--max-size=1024 --no-audio`). */
+  scrcpyExtraArgs: string;
+  /** Allow phone to request a local adb screencap on this PC. Default false. */
+  allowRemoteAdbScreencap: boolean;
 };
 
 const defaults: DesktopSettings = {
@@ -42,6 +50,10 @@ const defaults: DesktopSettings = {
   autoClipboardImages: true,
   theme: "system",
   adbSerial: "",
+  scrcpyPath: "",
+  escrcpyExePath: "",
+  scrcpyExtraArgs: "",
+  allowRemoteAdbScreencap: false,
 };
 
 function parseTheme(value: unknown): ThemePreference {

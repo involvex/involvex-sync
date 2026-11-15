@@ -19,6 +19,7 @@ export {
   verifyFrame,
 } from "./crypto";
 export {
+  adbScreencapRequestBody,
   clipboardUpdateBody,
   createMessageBody,
   decryptFrame,
@@ -82,6 +83,7 @@ export {
   MAX_SECRET_VALUE_CHARS,
   PREFERRED_CLIPBOARD_IMAGE_BYTES,
   PROTOCOL_VERSION,
+  type AdbScreencapRequestPayload,
   type ClipboardUpdatePayload,
   type DeviceIdentity,
   type DeviceKeys,

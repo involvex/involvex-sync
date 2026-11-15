@@ -96,6 +96,11 @@ import {
   type AdbDevice,
 } from "./services/adbDevices";
 import {
+  describeMirrorError,
+  parseScrcpyExtraArgs,
+  type ScrcpyStatus,
+} from "./services/scrcpy";
+import {
   applyPeerNoteDelete,
   applyPeerNoteUpsert,
   clearPendingNoteOps,
@@ -270,6 +275,8 @@ export default function App() {
   const [adbCmd, setAdbCmd] = useState("");
   const [cmdOutput, setCmdOutput] = useState("");
   const [screenshotBusy, setScreenshotBusy] = useState(false);
+  const [mirrorBusy, setMirrorBusy] = useState(false);
+  const [mirrorRunning, setMirrorRunning] = useState(false);
   const [adbDevices, setAdbDevices] = useState<AdbDevice[]>([]);
   const [adbDevicesBusy, setAdbDevicesBusy] = useState(false);
   const [adbDevicesError, setAdbDevicesError] = useState("");
@@ -293,6 +300,13 @@ export default function App() {
     Record<string, string>
   >({});
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const onScreenshotRef = useRef<() => Promise<void>>(async () => {});
+  const onStartMirrorRef = useRef<() => Promise<void>>(async () => {});
+  const onStopMirrorRef = useRef<() => Promise<void>>(async () => {});
+  const onOpenEscrcpyRef = useRef<() => Promise<void>>(async () => {});
+  const onAdbScreencapRequestRef = useRef<(requestId: string) => Promise<void>>(
+    async () => {},
+  );
 
   const sessionRef = useRef<SyncSession | null>(null);
   const messageQueueRef = useRef<string[]>([]);
@@ -483,6 +497,8 @@ export default function App() {
           result.ok ? "ok" : "err",
         );
       },
+      onAdbScreencapRequest: (requestId) =>
+        onAdbScreencapRequestRef.current(requestId),
       onNotificationMirror: async (note) => {
         if (!settingsRef.current.showPhoneNotifications) {
           log(`notif (ignored): ${note.title}`);
@@ -599,6 +615,13 @@ export default function App() {
     if (tab !== "commands" || adbLoadedRef.current) return;
     adbLoadedRef.current = true;
     void refreshAdbDevices();
+  }, [tab]);
+
+  useEffect(() => {
+    if (tab !== "commands") return;
+    void refreshMirrorStatus();
+    const id = window.setInterval(() => void refreshMirrorStatus(), 5_000);
+    return () => window.clearInterval(id);
   }, [tab]);
 
   // Relay socket. Rebuilt when the paired peer changes because the room name
@@ -816,6 +839,24 @@ export default function App() {
               log(`isync keyboard failed: ${String(err)}`);
             }
           })();
+        }),
+      );
+      unsubs.push(
+        await listen("isync-screenshot", () => {
+          void onScreenshotRef.current();
+        }),
+      );
+      unsubs.push(
+        await listen<string>("isync-mirror", (e) => {
+          const action = (e.payload || "").trim().toLowerCase();
+          if (action === "start") void onStartMirrorRef.current();
+          else if (action === "stop") void onStopMirrorRef.current();
+          else log(`isync mirror ignored: ${e.payload}`);
+        }),
+      );
+      unsubs.push(
+        await listen("isync-escrcpy", () => {
+          void onOpenEscrcpyRef.current();
         }),
       );
     })();
@@ -1900,6 +1941,159 @@ export default function App() {
     }
   }
 
+  async function refreshMirrorStatus(): Promise<void> {
+    try {
+      const st = await invoke<ScrcpyStatus>("scrcpy_status");
+      setMirrorRunning(st.running);
+    } catch {
+      setMirrorRunning(false);
+    }
+  }
+
+  async function onStartMirror(): Promise<void> {
+    if (mirrorBusy) return;
+    setMirrorBusy(true);
+    try {
+      const target = await resolveAdbTarget();
+      if (!target.serial) {
+        throw new Error(target.message || "no adb device");
+      }
+      const cfg = settingsRef.current;
+      const extraArgs = parseScrcpyExtraArgs(cfg.scrcpyExtraArgs);
+      const st = await invoke<ScrcpyStatus>("start_scrcpy", {
+        serial: target.serial,
+        scrcpyPath: cfg.scrcpyPath.trim() || null,
+        extraArgs,
+      });
+      setMirrorRunning(st.running);
+      log(`mirror start -s ${target.serial}${st.pid ? ` pid=${st.pid}` : ""}`);
+      toast("Mirror started", "ok");
+    } catch (e) {
+      const msg = describeMirrorError(e);
+      log(`mirror: ${msg}`);
+      toast(msg, "err");
+      setCmdOutput(msg);
+      await refreshMirrorStatus();
+    } finally {
+      setMirrorBusy(false);
+    }
+  }
+
+  async function onStopMirror(): Promise<void> {
+    if (mirrorBusy) return;
+    setMirrorBusy(true);
+    try {
+      await invoke<ScrcpyStatus>("stop_scrcpy");
+      setMirrorRunning(false);
+      log("mirror stopped");
+      toast("Mirror stopped", "ok");
+    } catch (e) {
+      const msg = describeMirrorError(e);
+      log(`mirror stop: ${msg}`);
+      toast(msg, "err");
+    } finally {
+      setMirrorBusy(false);
+    }
+  }
+
+  async function onOpenEscrcpy(): Promise<void> {
+    if (mirrorBusy) return;
+    setMirrorBusy(true);
+    try {
+      const target = await resolveAdbTarget();
+      if (!target.serial) {
+        throw new Error(target.message || "no adb device");
+      }
+      const cfg = settingsRef.current;
+      await invoke("open_escrcpy", {
+        serial: target.serial,
+        exePath: cfg.escrcpyExePath.trim() || null,
+      });
+      log(`escrcpy open --device-id=${target.serial}`);
+      toast("Escrcpy opened", "ok");
+    } catch (e) {
+      const msg = describeMirrorError(e);
+      log(`escrcpy: ${msg}`);
+      toast(msg, "err");
+      setCmdOutput(msg);
+    } finally {
+      setMirrorBusy(false);
+    }
+  }
+
+  async function onAdbInputPreset(
+    kind: "home" | "back" | "recents",
+  ): Promise<void> {
+    const keyevent = kind === "home" ? "3" : kind === "back" ? "4" : "187";
+    const label =
+      kind === "home" ? "Home" : kind === "back" ? "Back" : "Recents";
+    const target = await resolveAdbTarget();
+    if (!target.serial) {
+      setCmdOutput(target.message);
+      toast(target.message, "err");
+      return;
+    }
+    try {
+      const result = await invoke<ShellResult>("run_adb_shell", {
+        command: `input keyevent ${keyevent}`,
+        timeoutMs: 10_000,
+        serial: target.serial,
+      });
+      setCmdOutput(
+        [result.stdout, result.stderr].filter(Boolean).join("\n") ||
+          `(${label} exit ${result.exitCode ?? "?"})`,
+      );
+      toast(
+        result.ok ? `${label} sent` : `${label} failed`,
+        result.ok ? "ok" : "err",
+      );
+    } catch (e) {
+      const msg = describeAdbError(e);
+      setCmdOutput(msg);
+      toast(msg, "err");
+    }
+  }
+
+  onScreenshotRef.current = onScreenshot;
+  onStartMirrorRef.current = onStartMirror;
+  onStopMirrorRef.current = onStopMirror;
+  onOpenEscrcpyRef.current = onOpenEscrcpy;
+  onAdbScreencapRequestRef.current = async (requestId) => {
+    if (!settingsRef.current.allowRemoteAdbScreencap) {
+      log(`adb screencap request denied (${requestId})`);
+      toast("Remote ADB screenshot blocked — enable in Settings", "err");
+      return;
+    }
+    try {
+      const target = await resolveAdbTarget();
+      if (!target.serial) {
+        log(`adb screencap request: ${target.message}`);
+        toast(target.message, "err");
+        return;
+      }
+      const path = await invoke<string>("adb_screencap", {
+        timeoutMs: 20_000,
+        serial: target.serial,
+      });
+      await writeImage(path);
+      const dataBase64 = await invoke<string>("read_file_base64", {
+        path,
+      });
+      const encoded = await compressClipboardImageBytes(
+        fromBase64(dataBase64),
+        "image/png",
+      );
+      await sessionRef.current?.sendClipboardImage(encoded);
+      pushHistory("[Image]", "out", { kind: "image", imagePath: path });
+      log(`adb screencap request ${requestId} → phone`);
+      toast("Screenshot sent to phone", "ok");
+    } catch (e) {
+      const msg = describeAdbError(e);
+      log(`adb screencap request: ${msg}`);
+      toast(msg, "err");
+    }
+  };
+
   /** Select value: fall back to Auto when the saved serial isn't connected. */
   const adbSelectedSerial =
     settings.adbSerial &&
@@ -2908,6 +3102,60 @@ export default function App() {
                 >
                   {screenshotBusy ? "Capturing…" : "Screenshot → clipboard"}
                 </button>
+                <button
+                  type="button"
+                  disabled={mirrorBusy || mirrorRunning}
+                  onClick={() => void onStartMirror()}
+                >
+                  {mirrorBusy && !mirrorRunning ? "Starting…" : "Start Mirror"}
+                </button>
+                <button
+                  type="button"
+                  className="ghost"
+                  disabled={mirrorBusy || !mirrorRunning}
+                  onClick={() => void onStopMirror()}
+                >
+                  Stop Mirror
+                </button>
+                <button
+                  type="button"
+                  className="ghost"
+                  disabled={mirrorBusy}
+                  onClick={() => void onOpenEscrcpy()}
+                >
+                  Open in Escrcpy
+                </button>
+              </div>
+              {mirrorRunning ? (
+                <p className="status-ok small">Mirror running (local scrcpy)</p>
+              ) : (
+                <p className="muted small">
+                  Mirror needs USB/Wi‑Fi ADB — independent of Sync Live/relay.
+                </p>
+              )}
+              <p className="muted small">Input presets</p>
+              <div className="row">
+                <button
+                  type="button"
+                  className="ghost"
+                  onClick={() => void onAdbInputPreset("home")}
+                >
+                  Home
+                </button>
+                <button
+                  type="button"
+                  className="ghost"
+                  onClick={() => void onAdbInputPreset("back")}
+                >
+                  Back
+                </button>
+                <button
+                  type="button"
+                  className="ghost"
+                  onClick={() => void onAdbInputPreset("recents")}
+                >
+                  Recents
+                </button>
               </div>
               <label className="stack">
                 Shell command
@@ -3217,6 +3465,62 @@ export default function App() {
                 />
                 Allow remote PowerShell from phone
               </label>
+              <label className="check">
+                <input
+                  type="checkbox"
+                  checked={settings.allowRemoteAdbScreencap}
+                  onChange={(e) => {
+                    const next = saveSettings({
+                      allowRemoteAdbScreencap: e.target.checked,
+                    });
+                    setSettings(next);
+                    log(
+                      next.allowRemoteAdbScreencap
+                        ? "remote adb screencap on"
+                        : "remote adb screencap off",
+                    );
+                  }}
+                />
+                Allow phone to request ADB screenshot (local)
+              </label>
+              <p className="muted small">ADB / Mirror</p>
+              <label className="stack">
+                scrcpy path
+                <input
+                  value={settings.scrcpyPath}
+                  onChange={(e) => {
+                    const next = saveSettings({ scrcpyPath: e.target.value });
+                    setSettings(next);
+                  }}
+                  placeholder="Empty = PATH / Escrcpy bundle / ESCRCPY_SCRCPY"
+                />
+              </label>
+              <label className="stack">
+                Escrcpy.exe path
+                <input
+                  value={settings.escrcpyExePath}
+                  onChange={(e) => {
+                    const next = saveSettings({
+                      escrcpyExePath: e.target.value,
+                    });
+                    setSettings(next);
+                  }}
+                  placeholder="Empty = PATH / common install dirs"
+                />
+              </label>
+              <label className="stack">
+                scrcpy extra args
+                <input
+                  value={settings.scrcpyExtraArgs}
+                  onChange={(e) => {
+                    const next = saveSettings({
+                      scrcpyExtraArgs: e.target.value,
+                    });
+                    setSettings(next);
+                  }}
+                  placeholder="--max-size=1024 --no-audio"
+                />
+              </label>
               <label className="stack">
                 Incoming files folder
                 <input
@@ -3323,6 +3627,10 @@ export default function App() {
               </div>
               {firewallMsg ? <p className="small">{firewallMsg}</p> : null}
               <p className="muted small">Relay: {relayStatus}</p>
+              <p className="muted small">
+                Prefer LAN for large files. Mirror uses local ADB/scrcpy — not
+                the relay. PC↔PC stays relay-only (desktop does not dial LAN).
+              </p>
               <p className="muted small">
                 mDNS advertises <code>_invxconnect._tcp.local</code>. Relay is
                 for away-from-home — not for LAN pair.

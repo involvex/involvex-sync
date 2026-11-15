@@ -38,7 +38,9 @@ describe("crypto", () => {
       sharedSecret(a.x25519.privateKey, b.x25519.publicKey),
     );
     const { nonce, ciphertext } = seal("secret", key);
-    const flipped = `${ciphertext.slice(0, -2)}ff`;
+    // Flip the last hex byte to a different value (avoid a no-op when it
+    // already ended in "ff").
+    const flipped = `${ciphertext.slice(0, -2)}${ciphertext.endsWith("ff") ? "00" : "ff"}`;
     expect(() => open(flipped, nonce, key)).toThrow();
   });
 

@@ -34,8 +34,12 @@ Usage:
   isync find                   Ring the phone
   isync keyboard type [text]   Type text on the phone (IME or a11y)
   isync keyboard key <id>      Send a key (enter, backspace, tab, …)
+  isync screenshot             ADB screencap → PC clipboard
+  isync mirror start|stop      Start/stop local scrcpy mirror
+  isync escrcpy open           Open Escrcpy GUI for the selected device
 
-Requires the desktop app running for share / push / find / keyboard / status.
+Requires the desktop app running for share / push / find / keyboard / screenshot /
+mirror / escrcpy / status.
 `);
   process.exit(exitCode);
 }
@@ -265,6 +269,47 @@ async function main(): Promise<void> {
       return;
     }
     usage();
+  }
+
+  if (cmd === "screenshot") {
+    await requireDesktop();
+    const { status, text } = await control("POST", "/v1/screenshot");
+    if (status >= 400) {
+      console.error(text);
+      process.exit(1);
+    }
+    console.log("screenshot requested");
+    return;
+  }
+
+  if (cmd === "mirror") {
+    if (sub !== "start" && sub !== "stop") {
+      console.error("usage: isync mirror start|stop");
+      process.exit(1);
+    }
+    await requireDesktop();
+    const { status, text } = await control("POST", "/v1/mirror", sub);
+    if (status >= 400) {
+      console.error(text);
+      process.exit(1);
+    }
+    console.log(`mirror ${sub} requested`);
+    return;
+  }
+
+  if (cmd === "escrcpy") {
+    if (sub && sub !== "open") {
+      console.error("usage: isync escrcpy open");
+      process.exit(1);
+    }
+    await requireDesktop();
+    const { status, text } = await control("POST", "/v1/escrcpy");
+    if (status >= 400) {
+      console.error(text);
+      process.exit(1);
+    }
+    console.log("escrcpy open requested");
+    return;
   }
 
   if (cmd === "clipboard") {

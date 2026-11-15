@@ -25,6 +25,7 @@ struct AppState {
     hub: Arc<WsHub>,
     mdns: Mutex<Option<MdnsAdvertiser>>,
     folder_sync: folder_sync::FolderSyncState,
+    scrcpy: shell::ScrcpyState,
 }
 
 #[derive(Serialize)]
@@ -268,6 +269,44 @@ fn adb_screencap(
     shell::adb_screencap_png(timeout_ms.unwrap_or(30_000), serial.as_deref())
 }
 
+#[tauri::command]
+fn start_scrcpy(
+    state: State<'_, AppState>,
+    serial: String,
+    scrcpy_path: Option<String>,
+    extra_args: Option<Vec<String>>,
+) -> Result<shell::ScrcpyStatus, String> {
+    shell::start_scrcpy(
+        &state.scrcpy,
+        &serial,
+        scrcpy_path.as_deref(),
+        extra_args.as_deref().unwrap_or(&[]),
+    )
+}
+
+#[tauri::command]
+fn stop_scrcpy(state: State<'_, AppState>) -> Result<shell::ScrcpyStatus, String> {
+    shell::stop_scrcpy(&state.scrcpy)
+}
+
+#[tauri::command]
+fn scrcpy_status(state: State<'_, AppState>) -> shell::ScrcpyStatus {
+    shell::scrcpy_status(&state.scrcpy)
+}
+
+#[tauri::command]
+fn open_escrcpy(serial: String, exe_path: Option<String>) -> Result<(), String> {
+    shell::open_escrcpy(&serial, exe_path.as_deref())
+}
+
+#[tauri::command]
+fn probe_mirror_bins(
+    scrcpy_path: Option<String>,
+    escrcpy_path: Option<String>,
+) -> shell::MirrorBins {
+    shell::probe_mirror_bins(scrcpy_path.as_deref(), escrcpy_path.as_deref())
+}
+
 fn show_main_window(app: &AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.unminimize();
@@ -369,6 +408,7 @@ pub fn run() {
             hub: hub.clone(),
             mdns: Mutex::new(None),
             folder_sync: folder_sync::FolderSyncState::default(),
+            scrcpy: shell::ScrcpyState::default(),
         })
         .setup(move |app| {
             bootlog::write("setup begin");
@@ -433,6 +473,11 @@ pub fn run() {
             run_gws,
             adb_devices,
             adb_screencap,
+            start_scrcpy,
+            stop_scrcpy,
+            scrcpy_status,
+            open_escrcpy,
+            probe_mirror_bins,
             show_main_window_cmd,
             start_folder_sync,
             stop_folder_sync,

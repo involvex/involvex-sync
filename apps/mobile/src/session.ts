@@ -39,6 +39,7 @@ import {
   parseFrame,
   parsePairHandshake,
   randomBytes,
+  adbScreencapRequestBody,
   remoteCommandBody,
   remoteCommandResultBody,
   secretDeleteBody,
@@ -883,6 +884,17 @@ export class MobileSession {
       this.peer?.deviceId,
     );
     if (!body) throw new Error("invalid remote command");
+    this.sendFrame(body);
+  }
+
+  sendAdbScreencapRequest(requestId?: string): void {
+    const id = requestId?.trim() || bytesToHex(randomBytes(8));
+    const body = adbScreencapRequestBody(
+      this.local.deviceId,
+      id,
+      this.peer?.deviceId,
+    );
+    if (!body) throw new Error("invalid screencap request");
     this.sendFrame(body);
   }
 

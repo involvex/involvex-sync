@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
+  adbScreencapRequestBody,
   decryptFrame,
   encryptFrame,
   generateDeviceKeys,
@@ -61,5 +62,19 @@ describe("remote_command", () => {
       command: "   ",
     });
     expect(body).toBeNull();
+  });
+});
+
+describe("adb_screencap_request", () => {
+  test("builds request body", () => {
+    const body = adbScreencapRequestBody("phone", "req-shot");
+    expect(body?.payload).toEqual({
+      type: "adb_screencap_request",
+      requestId: "req-shot",
+    });
+  });
+
+  test("rejects empty request id", () => {
+    expect(adbScreencapRequestBody("phone", "  ")).toBeNull();
   });
 });

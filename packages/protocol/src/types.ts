@@ -36,6 +36,7 @@ export type MessageType =
   | "find_phone"
   | "remote_command"
   | "remote_command_result"
+  | "adb_screencap_request"
   | "note_upsert"
   | "note_delete"
   | "secret_upsert"
@@ -232,6 +233,17 @@ export type RemoteCommandResultPayload = {
   stderr: string;
 };
 
+/**
+ * Phone → PC: request a local `adb screencap` on the desktop.
+ * Desktop replies with a clipboard-purpose file transfer (image), or ignores
+ * when `allowRemoteAdbScreencap` is off / no device. Never crosses the relay
+ * as video — still image only (≤2 MiB after compress).
+ */
+export type AdbScreencapRequestPayload = {
+  type: "adb_screencap_request";
+  requestId: string;
+};
+
 /** Soft caps for synced notes / secrets. */
 export const MAX_NOTES = 100;
 export const MAX_SECRETS = 100;
@@ -303,6 +315,7 @@ export type MessagePayload =
   | FindPhonePayload
   | RemoteCommandPayload
   | RemoteCommandResultPayload
+  | AdbScreencapRequestPayload
   | NoteUpsertPayload
   | NoteDeletePayload
   | SecretUpsertPayload

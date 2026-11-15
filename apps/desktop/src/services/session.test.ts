@@ -284,6 +284,49 @@ describe("SyncSession peer routing", () => {
     expect(sent).toEqual([]);
   });
 
+  test("relay fallback covers share, find-phone and notes — not only clipboard", async () => {
+    const { session, desk } = harness();
+    const a = generateDeviceKeys();
+    const b = generateDeviceKeys();
+    session.setPeers([peer(a, "Phone"), peer(b, "Laptop")]);
+    session.setActivePeer(a.deviceId);
+    session.setRelaySender((raw) => relaySent.push(raw));
+
+    // Map A to a socket, then kill it so every send must use the relay.
+    const frame = encryptFrame(
+      {
+        v: 1,
+        id: "abc",
+        from: a.deviceId,
+        ts: Date.now(),
+        payload: { type: "ping" },
+      },
+      a,
+      peerKeys(desk),
+    );
+    await session.handleIncomingRaw(serializeFrame(frame), 6);
+    failSendTo = true;
+
+    await session.sendShareUrl("https://example.com/shared");
+    await session.sendFindPhone(5_000);
+    await session.sendNoteUpsert({
+      id: "n1",
+      title: "t",
+      body: "b",
+      updatedAt: 1,
+    });
+
+    expect(relaySent).toHaveLength(3);
+    expect(sent).toEqual([]);
+    for (const raw of relaySent) {
+      const sealed = parseFrame(raw);
+      expect(sealed).not.toBeNull();
+      expect(decryptFrame(sealed!, a, peerKeys(desk))).toMatchObject({
+        ok: true,
+      });
+    }
+  });
+
   test("never uses ws_send when another device's socket is ambiguous", async () => {
     const { session, desk } = harness();
     const a = generateDeviceKeys();

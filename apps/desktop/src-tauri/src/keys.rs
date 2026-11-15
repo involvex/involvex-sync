@@ -94,6 +94,16 @@ fn delete_entry(account: &str) -> Result<(), KeyError> {
     }
 }
 
+/// Fold a legacy singleton peer into the list. Returns true when a new peer
+/// was appended (caller should persist). Duplicate ids are ignored.
+fn fold_legacy_into(peers: &mut Vec<StoredPeer>, legacy: StoredPeer) -> bool {
+    if peers.iter().any(|p| p.device_id == legacy.device_id) {
+        return false;
+    }
+    peers.push(legacy);
+    true
+}
+
 /// All paired devices, newest pairing last. Reads the deprecated single-peer
 /// slot once and folds it in, so an upgrading install keeps its pairing.
 pub fn load_peers() -> Result<PeerList, KeyError> {
@@ -105,10 +115,7 @@ pub fn load_peers() -> Result<PeerList, KeyError> {
     let mut migrated = false;
     if let Some(legacy) = read_entry(PEER_ACCOUNT)? {
         if let Ok(peer) = serde_json::from_str::<StoredPeer>(&legacy) {
-            if !peers.iter().any(|p| p.device_id == peer.device_id) {
-                peers.push(peer);
-                migrated = true;
-            }
+            migrated = fold_legacy_into(&mut peers, peer);
             // Drop the legacy slot either way — it is superseded.
             delete_entry(PEER_ACCOUNT)?;
             if migrated {
@@ -225,5 +232,33 @@ mod tests {
         let back: Vec<StoredPeer> = serde_json::from_str(&raw).expect("deserialize");
         assert_eq!(back.len(), 2);
         assert_eq!(back[1].device_id, "b");
+    }
+
+    #[test]
+    fn fold_legacy_appends_when_list_empty() {
+        let mut peers = Vec::new();
+        assert!(fold_legacy_into(&mut peers, peer("legacy")));
+        assert_eq!(peers.len(), 1);
+        assert_eq!(peers[0].device_id, "legacy");
+    }
+
+    #[test]
+    fn fold_legacy_skips_duplicate_device_id() {
+        let mut peers = vec![peer("same")];
+        assert!(!fold_legacy_into(&mut peers, peer("same")));
+        assert_eq!(peers.len(), 1);
+    }
+
+    #[test]
+    fn fold_legacy_keeps_existing_peers_and_appends() {
+        let mut peers = vec![peer("a")];
+        assert!(fold_legacy_into(&mut peers, peer("b")));
+        assert_eq!(
+            peers
+                .iter()
+                .map(|p| p.device_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["a", "b"]
+        );
     }
 }

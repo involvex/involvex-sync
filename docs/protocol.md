@@ -19,7 +19,9 @@ Payload types: `share_url`, `clipboard_update`, `ping`, `pong`, `pair_ack`,
 `termux_open_url`, `termux_clipboard_set`, `file_transfer`, `file_offer`,
 `file_chunk`, `file_done`, `file_abort`, `notification_mirror`,
 `keyboard_text`, `keyboard_key`, `keyboard_status`, `find_phone`,
-`remote_command`, `remote_command_result`.
+`remote_command`, `remote_command_result`, `adb_screencap_request`,
+`note_upsert`, `note_delete`, `secret_upsert`, `secret_delete`,
+`vault_key_share`.
 
 Chunked files: soft cap 100 MiB, ~64 KiB decoded chunks, `sha256` on
 `file_done`. Legacy `file_transfer` remains for ≤2 MiB.
@@ -31,8 +33,23 @@ instead of saving to the incoming-files folder. Text stays on
 `clipboard_update`.
 
 Remote commands (`remote_command` / `remote_command_result`): `shell` is
-`pwsh` (phone→PC), `termux` (PC→phone via InVx Termux), or `adb` (local on
-PC only). Both sides require an explicit allow setting. Cap 2000 chars.
+`pwsh` (phone→PC), `termux` (PC→phone via InVx Termux), or `adb`.
+**`shell: "adb"` is never executed from an inbound wire frame** — local ADB
+shell/screencap on the desktop is opt-in UI / Tauri only. Both `pwsh` and
+`termux` require an explicit allow setting. Cap 2000 chars.
+
+`adb_screencap_request`: phone → PC asks for a local `adb screencap`. Desktop
+honours it only when Settings → “Allow phone to request ADB screenshot” is on
+and a usable ADB device is present; the reply is a clipboard-purpose image
+transfer (≤2 MiB), not a video stream. Independent of Sync Live vs relay —
+ADB is a parallel local trust boundary.
+
+Notes / secrets (synced across every connected host):
+
+- `note_upsert` / `note_delete` — plain title/body with soft caps
+  (`MAX_NOTES`, `MAX_NOTE_*`).
+- `secret_upsert` / `secret_delete` — vault-AEAD ciphertext + label/kind meta.
+- `vault_key_share` — one-time 32-byte vault key bootstrap (transport-sealed).
 
 `keyboard_status`: `{ active, mode? }` where `mode` is `ime` | `a11y` |
 `none`. Older clients may omit `mode`; treat `active` alone as IME-ready.

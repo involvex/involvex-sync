@@ -39,6 +39,7 @@ import {
   parseFrame,
   parsePairHandshake,
   randomBytes,
+  adbScreencapRequestBody,
   remoteCommandBody,
   remoteCommandResultBody,
   secretDeleteBody,
@@ -129,6 +130,10 @@ export type SessionHandlers = {
   ) => void | Promise<void>;
   onRemoteCommandResult?: (
     result: RemoteCommandResult,
+    from: string,
+  ) => void | Promise<void>;
+  onAdbScreencapRequest?: (
+    requestId: string,
     from: string,
   ) => void | Promise<void>;
   onLog: (line: string) => void;
@@ -576,6 +581,13 @@ export class SyncSession {
         );
         break;
       }
+      case "adb_screencap_request": {
+        await this.handlers.onAdbScreencapRequest?.(
+          payload.requestId,
+          body.from,
+        );
+        break;
+      }
       case "ping":
       case "pong":
       case "pair_ack":
@@ -754,6 +766,17 @@ export class SyncSession {
     await this.sendBody(
       findPhoneBody(this.local.deviceId, durationMs, this.peer?.deviceId),
     );
+  }
+
+  async sendAdbScreencapRequest(requestId?: string): Promise<void> {
+    const id = requestId?.trim() || bytesToHex(randomBytes(8));
+    const body = adbScreencapRequestBody(
+      this.local.deviceId,
+      id,
+      this.peer?.deviceId,
+    );
+    if (!body) throw new Error("invalid screencap request");
+    await this.sendBody(body);
   }
 
   async sendRemoteCommand(cmd: {
