@@ -769,8 +769,7 @@ export class SyncSession {
   }
 
   async sendAdbScreencapRequest(requestId?: string): Promise<void> {
-    const id =
-      requestId?.trim() || bytesToHex(randomBytes(8));
+    const id = requestId?.trim() || bytesToHex(randomBytes(8));
     const body = adbScreencapRequestBody(
       this.local.deviceId,
       id,

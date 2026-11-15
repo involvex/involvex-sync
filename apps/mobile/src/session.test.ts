@@ -1,3 +1,4 @@
+/// <reference types="bun" />
 import { beforeEach, describe, expect, mock, test } from "bun:test";
 import {
   decryptFrame,
@@ -18,9 +19,9 @@ void mock.module("expo-constants", () => ({
   default: { expoConfig: { extra: { relayUrl: "wss://relay.test/ws" } } },
 }));
 void mock.module("expo-secure-store", () => ({
-  getItemAsync: async () => null,
-  setItemAsync: async () => {},
-  deleteItemAsync: async () => {},
+  getItemAsync: () => Promise.resolve(null),
+  setItemAsync: () => Promise.resolve(),
+  deleteItemAsync: () => Promise.resolve(),
 }));
 
 type FakeSocket = {
@@ -53,7 +54,7 @@ function installFakeWebSocket(): void {
     onmessage: FakeSocket["onmessage"] = null;
     constructor(url: string) {
       this.url = url;
-      sockets.push(this as unknown as FakeSocket);
+      sockets.push(this);
       queueMicrotask(() => {
         if (this.closed) return;
         this.readyState = FakeWebSocket.OPEN;
@@ -170,10 +171,13 @@ describe("MobileSession multi-host sockets", () => {
     session.connectAll();
     await flush();
     expect(sockets).toHaveLength(2);
-    const deskSocket = sockets[0]!;
-    const laptopSocket = sockets[1]!;
+    const deskSocket = sockets[0];
+    const laptopSocket = sockets[1];
+    if (!deskSocket || !laptopSocket) throw new Error("expected two sockets");
+    const nextPeer = peers[1];
+    if (!nextPeer) throw new Error("expected laptop peer");
 
-    session.setPeers([peers[1]!], lanTransport);
+    session.setPeers([nextPeer], lanTransport);
 
     expect(deskSocket.closed).toBe(true);
     expect(laptopSocket.closed).toBe(false);
@@ -195,10 +199,12 @@ describe("MobileSession multi-host sockets", () => {
     session.connectAll();
     await flush();
     expect(sockets).toHaveLength(1);
+    const only = sockets[0];
+    if (!only) throw new Error("expected one socket");
 
     session.setPeers([], lanTransport);
 
-    expect(sockets[0]!.closed).toBe(true);
+    expect(only.closed).toBe(true);
     expect(session.peerIds).toEqual([]);
   });
 

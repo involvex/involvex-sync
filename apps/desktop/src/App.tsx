@@ -304,6 +304,9 @@ export default function App() {
   const onStartMirrorRef = useRef<() => Promise<void>>(async () => {});
   const onStopMirrorRef = useRef<() => Promise<void>>(async () => {});
   const onOpenEscrcpyRef = useRef<() => Promise<void>>(async () => {});
+  const onAdbScreencapRequestRef = useRef<(requestId: string) => Promise<void>>(
+    async () => {},
+  );
 
   const sessionRef = useRef<SyncSession | null>(null);
   const messageQueueRef = useRef<string[]>([]);
@@ -494,41 +497,8 @@ export default function App() {
           result.ok ? "ok" : "err",
         );
       },
-      onAdbScreencapRequest: async (requestId) => {
-        if (!settingsRef.current.allowRemoteAdbScreencap) {
-          log(`adb screencap request denied (${requestId})`);
-          toast("Remote ADB screenshot blocked — enable in Settings", "err");
-          return;
-        }
-        try {
-          const target = await resolveAdbTarget();
-          if (!target.serial) {
-            log(`adb screencap request: ${target.message}`);
-            toast(target.message, "err");
-            return;
-          }
-          const path = await invoke<string>("adb_screencap", {
-            timeoutMs: 20_000,
-            serial: target.serial,
-          });
-          await writeImage(path);
-          const dataBase64 = await invoke<string>("read_file_base64", {
-            path,
-          });
-          const encoded = await compressClipboardImageBytes(
-            fromBase64(dataBase64),
-            "image/png",
-          );
-          await sessionRef.current?.sendClipboardImage(encoded);
-          pushHistory("[Image]", "out", { kind: "image", imagePath: path });
-          log(`adb screencap request ${requestId} → phone`);
-          toast("Screenshot sent to phone", "ok");
-        } catch (e) {
-          const msg = describeAdbError(e);
-          log(`adb screencap request: ${msg}`);
-          toast(msg, "err");
-        }
-      },
+      onAdbScreencapRequest: (requestId) =>
+        onAdbScreencapRequestRef.current(requestId),
       onNotificationMirror: async (note) => {
         if (!settingsRef.current.showPhoneNotifications) {
           log(`notif (ignored): ${note.title}`);
@@ -2051,10 +2021,12 @@ export default function App() {
     }
   }
 
-  async function onAdbInputPreset(kind: "home" | "back" | "recents"): Promise<void> {
-    const keyevent =
-      kind === "home" ? "3" : kind === "back" ? "4" : "187";
-    const label = kind === "home" ? "Home" : kind === "back" ? "Back" : "Recents";
+  async function onAdbInputPreset(
+    kind: "home" | "back" | "recents",
+  ): Promise<void> {
+    const keyevent = kind === "home" ? "3" : kind === "back" ? "4" : "187";
+    const label =
+      kind === "home" ? "Home" : kind === "back" ? "Back" : "Recents";
     const target = await resolveAdbTarget();
     if (!target.serial) {
       setCmdOutput(target.message);
@@ -2071,7 +2043,10 @@ export default function App() {
         [result.stdout, result.stderr].filter(Boolean).join("\n") ||
           `(${label} exit ${result.exitCode ?? "?"})`,
       );
-      toast(result.ok ? `${label} sent` : `${label} failed`, result.ok ? "ok" : "err");
+      toast(
+        result.ok ? `${label} sent` : `${label} failed`,
+        result.ok ? "ok" : "err",
+      );
     } catch (e) {
       const msg = describeAdbError(e);
       setCmdOutput(msg);
@@ -2083,6 +2058,41 @@ export default function App() {
   onStartMirrorRef.current = onStartMirror;
   onStopMirrorRef.current = onStopMirror;
   onOpenEscrcpyRef.current = onOpenEscrcpy;
+  onAdbScreencapRequestRef.current = async (requestId) => {
+    if (!settingsRef.current.allowRemoteAdbScreencap) {
+      log(`adb screencap request denied (${requestId})`);
+      toast("Remote ADB screenshot blocked — enable in Settings", "err");
+      return;
+    }
+    try {
+      const target = await resolveAdbTarget();
+      if (!target.serial) {
+        log(`adb screencap request: ${target.message}`);
+        toast(target.message, "err");
+        return;
+      }
+      const path = await invoke<string>("adb_screencap", {
+        timeoutMs: 20_000,
+        serial: target.serial,
+      });
+      await writeImage(path);
+      const dataBase64 = await invoke<string>("read_file_base64", {
+        path,
+      });
+      const encoded = await compressClipboardImageBytes(
+        fromBase64(dataBase64),
+        "image/png",
+      );
+      await sessionRef.current?.sendClipboardImage(encoded);
+      pushHistory("[Image]", "out", { kind: "image", imagePath: path });
+      log(`adb screencap request ${requestId} → phone`);
+      toast("Screenshot sent to phone", "ok");
+    } catch (e) {
+      const msg = describeAdbError(e);
+      log(`adb screencap request: ${msg}`);
+      toast(msg, "err");
+    }
+  };
 
   /** Select value: fall back to Auto when the saved serial isn't connected. */
   const adbSelectedSerial =
@@ -3097,9 +3107,7 @@ export default function App() {
                   disabled={mirrorBusy || mirrorRunning}
                   onClick={() => void onStartMirror()}
                 >
-                  {mirrorBusy && !mirrorRunning
-                    ? "Starting…"
-                    : "Start Mirror"}
+                  {mirrorBusy && !mirrorRunning ? "Starting…" : "Start Mirror"}
                 </button>
                 <button
                   type="button"

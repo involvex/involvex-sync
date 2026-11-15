@@ -397,8 +397,8 @@ export function SettingsScreen() {
           <Text style={styles.btnText}>Request PC screenshot (ADB)</Text>
         </Pressable>
         <Text style={styles.muted}>
-          PC must enable “Allow phone to request ADB screenshot” and have USB/Wi‑Fi
-          debugging. Image returns via clipboard sync (≤2 MiB).
+          PC must enable “Allow phone to request ADB screenshot” and have
+          USB/Wi‑Fi debugging. Image returns via clipboard sync (≤2 MiB).
         </Text>
         {cmdOutput ? (
           <Text style={styles.mono} selectable>
@@ -410,10 +410,11 @@ export function SettingsScreen() {
       <View style={styles.card}>
         <Text style={styles.h2}>Background clipboard</Text>
         <Text style={styles.muted}>
-          Android 10+ blocks background clipboard reads. Use Share → involvex Sync,
-          keep the app foreground, or enable Sync Keyboard IME. A future Shizuku
-          path (privileged binder as shell UID) is documented in architecture.md —
-          not built yet; OEM battery killers still apply after reboot.
+          Android 10+ blocks background clipboard reads. Use Share → involvex
+          Sync, keep the app foreground, or enable Sync Keyboard IME. A future
+          Shizuku path (privileged binder as shell UID) is documented in
+          architecture.md — not built yet; OEM battery killers still apply after
+          reboot.
         </Text>
       </View>
 

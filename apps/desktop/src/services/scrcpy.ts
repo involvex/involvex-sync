@@ -41,22 +41,23 @@ export function parseScrcpyExtraArgs(raw: string): string[] {
 
   let i = 0;
   while (i < s.length) {
-    while (i < s.length && /\s/.test(s[i]!)) i++;
+    while (i < s.length && /\s/.test(s.charAt(i))) i++;
     if (i >= s.length) break;
-    const quote = s[i] === '"' || s[i] === "'" ? s[i]! : null;
+    const quoteChar = s.charAt(i);
+    const quote = quoteChar === '"' || quoteChar === "'" ? quoteChar : null;
     if (quote) {
       i++;
       let token = "";
-      while (i < s.length && s[i] !== quote) {
-        token += s[i]!;
+      while (i < s.length && s.charAt(i) !== quote) {
+        token += s.charAt(i);
         i++;
       }
       if (i < s.length) i++; // closing quote
       out.push(assertSafeScrcpyArg(token));
       continue;
     }
-    let start = i;
-    while (i < s.length && !/\s/.test(s[i]!)) i++;
+    const start = i;
+    while (i < s.length && !/\s/.test(s.charAt(i))) i++;
     out.push(assertSafeScrcpyArg(s.slice(start, i)));
   }
   if (out.length > 32) throw new Error("too many scrcpy args");
@@ -94,18 +95,29 @@ export type ScrcpyStatus = {
   pid: number | null;
 };
 
+function errorText(err: unknown): string {
+  if (typeof err === "string") return err;
+  if (err instanceof Error) return err.message;
+  if (err && typeof err === "object" && "message" in err) {
+    const msg = (err as { message?: unknown }).message;
+    if (typeof msg === "string") return msg;
+  }
+  if (err == null) return "";
+  try {
+    return JSON.stringify(err) ?? "";
+  } catch {
+    return "";
+  }
+}
+
 /** Map spawn/path errors to actionable copy (mirrors describeAdbError tone). */
 export function describeMirrorError(err: unknown): string {
-  const msg =
-    typeof err === "string"
-      ? err
-      : err instanceof Error
-        ? err.message
-        : err && typeof err === "object" && "message" in err
-          ? String((err as { message?: unknown }).message ?? "")
-          : "";
+  const msg = errorText(err);
   const lower = (msg || "mirror failed").toLowerCase();
-  if (lower.includes("scrcpy not found") || lower.includes("escrcpy.exe not found")) {
+  if (
+    lower.includes("scrcpy not found") ||
+    lower.includes("escrcpy.exe not found")
+  ) {
     return msg.trim().slice(0, 240) || "scrcpy / Escrcpy not found";
   }
   if (lower.includes("already running")) {
