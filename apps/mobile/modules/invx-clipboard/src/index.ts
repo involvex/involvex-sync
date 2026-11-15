@@ -10,6 +10,13 @@ export type ClipboardImageEvent = {
 
 type Subscription = { remove: () => void };
 
+export type ClipboardShizukuStatus = {
+  status: string;
+  available: boolean;
+  authorized: boolean;
+  listening: boolean;
+};
+
 type InvxClipboardNative = {
   isAutoEnabled(): Promise<boolean>;
   setAutoEnabled(enabled: boolean): Promise<boolean>;
@@ -21,6 +28,9 @@ type InvxClipboardNative = {
     dataBase64: string,
     maxBytes: number,
   ): Promise<ClipboardImageEvent | null>;
+  isShizukuEnabled(): Promise<boolean>;
+  setShizukuEnabled(enabled: boolean): Promise<boolean>;
+  getShizukuStatus(): Promise<ClipboardShizukuStatus>;
   addListener(
     event: "onClipboardText",
     listener: (event: { text: string }) => void,
@@ -82,6 +92,30 @@ export async function compressClipboardImageNative(
 ): Promise<ClipboardImageEvent | null> {
   if (!native) return null;
   return native.compressImage(dataBase64, maxBytes);
+}
+
+export async function isClipboardShizukuEnabled(): Promise<boolean> {
+  if (Platform.OS !== "android" || !native?.isShizukuEnabled) return false;
+  return native.isShizukuEnabled();
+}
+
+export async function setClipboardShizukuEnabled(
+  enabled: boolean,
+): Promise<boolean> {
+  if (!native?.setShizukuEnabled) return false;
+  return native.setShizukuEnabled(enabled);
+}
+
+export async function getClipboardShizukuStatus(): Promise<ClipboardShizukuStatus> {
+  if (Platform.OS !== "android" || !native?.getShizukuStatus) {
+    return {
+      status: "unavailable",
+      available: false,
+      authorized: false,
+      listening: false,
+    };
+  }
+  return native.getShizukuStatus();
 }
 
 export function addClipboardTextListener(

@@ -1,6 +1,19 @@
 const KEY = "invx.settings";
 
-export type ThemePreference = "system" | "light" | "dark";
+export type ThemePreference =
+  "system" | "light" | "dark" | "amoled" | "hacker" | "monokai" | "github";
+
+export type ResolvedTheme = Exclude<ThemePreference, "system">;
+
+const THEME_PRESETS: readonly ThemePreference[] = [
+  "system",
+  "light",
+  "dark",
+  "amoled",
+  "hacker",
+  "monokai",
+  "github",
+] as const;
 
 export type DesktopSettings = {
   /** Show mirrored phone notifications as OS toasts. Default false. */
@@ -57,8 +70,11 @@ const defaults: DesktopSettings = {
 };
 
 function parseTheme(value: unknown): ThemePreference {
-  if (value === "light" || value === "dark" || value === "system") {
-    return value;
+  if (
+    typeof value === "string" &&
+    (THEME_PRESETS as readonly string[]).includes(value)
+  ) {
+    return value as ThemePreference;
   }
   return defaults.theme;
 }
@@ -85,11 +101,10 @@ export function saveSettings(patch: Partial<DesktopSettings>): DesktopSettings {
   return next;
 }
 
-export function resolveThemeMode(
+export function resolveTheme(
   preference: ThemePreference,
   systemDark: boolean,
-): "light" | "dark" {
-  if (preference === "light") return "light";
-  if (preference === "dark") return "dark";
-  return systemDark ? "dark" : "light";
+): ResolvedTheme {
+  if (preference === "system") return systemDark ? "dark" : "light";
+  return preference;
 }

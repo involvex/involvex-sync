@@ -10,15 +10,16 @@ import {
 import { useColorScheme } from "react-native";
 import { loadAppSettings, saveAppSettings } from "./appSettings";
 import {
-  colorsForMode,
-  resolveThemeMode,
+  colorsForTheme,
+  resolveTheme,
+  type ResolvedTheme,
   type ThemeColors,
   type ThemePreference,
 } from "./theme";
 
 type ThemeContextValue = {
   preference: ThemePreference;
-  resolved: "light" | "dark";
+  resolved: ResolvedTheme;
   colors: ThemeColors;
   ready: boolean;
   setPreference: (next: ThemePreference) => Promise<void>;
@@ -44,8 +45,8 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     await saveAppSettings({ theme: next });
   }, []);
 
-  const resolved = resolveThemeMode(preference, systemDark);
-  const colors = useMemo(() => colorsForMode(resolved), [resolved]);
+  const resolved = resolveTheme(preference, systemDark);
+  const colors = useMemo(() => colorsForTheme(resolved), [resolved]);
 
   const value = useMemo(
     () => ({ preference, resolved, colors, ready, setPreference }),

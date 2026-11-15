@@ -39,6 +39,7 @@ import {
   setClipboardAutoEnabled,
   setClipboardImeActive,
   setClipboardIncludeImages,
+  setClipboardShizukuEnabled,
   setNativeClipboardImage,
 } from "../modules/invx-clipboard/src";
 import {
@@ -435,6 +436,9 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       setAppSettings(settings);
       await setClipboardAutoEnabled(settings.autoClipboardSync);
       await setClipboardIncludeImages(settings.autoClipboardImages);
+      await setClipboardShizukuEnabled(
+        settings.autoClipboardSync && settings.shizukuClipboardEnabled,
+      );
       setNotes(await loadNotes());
       setSecrets(await loadSecrets());
       setVaultUnlocked(isVaultUnlocked());
@@ -502,7 +506,14 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     void setClipboardAutoEnabled(appSettings.autoClipboardSync);
     void setClipboardIncludeImages(appSettings.autoClipboardImages);
-  }, [appSettings.autoClipboardSync, appSettings.autoClipboardImages]);
+    void setClipboardShizukuEnabled(
+      appSettings.autoClipboardSync && appSettings.shizukuClipboardEnabled,
+    );
+  }, [
+    appSettings.autoClipboardSync,
+    appSettings.autoClipboardImages,
+    appSettings.shizukuClipboardEnabled,
+  ]);
 
   useEffect(() => {
     if (!appSettings.autoClipboardSync) return;

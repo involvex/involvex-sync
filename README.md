@@ -40,6 +40,13 @@ With the desktop app running:
 
 ```bash
 bun run isync -- status
+bun run isync -- peers
+bun run isync -- peer use <deviceId>
+bun run isync -- notes list
+bun run isync -- notes add "Title" "optional body"
+bun run isync -- file C:\path\to\file.pdf
+bun run isync -- remote termux "pm list packages | head"
+bun run isync -- remote pwsh "Get-Date"
 bun run isync -- clipboard get
 bun run isync -- clipboard set "hello from PC"
 bun run isync -- clipboard push          # OS clipboard → phone

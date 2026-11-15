@@ -142,7 +142,7 @@ export type SessionHandlers = {
 export class SyncSession {
   readonly local: DeviceKeys;
   readonly loop = new LoopGuard();
-  /** Active peer — everything outbound is sealed for this device. */
+  /** Active peer — clipboard/files/find/keyboard/commands target this device. */
   peer: PeerPublicKeys | null = null;
   private handlers: SessionHandlers;
   private identityMeta: { name: string; type: DeviceType };
@@ -619,6 +619,69 @@ export class SyncSession {
     await this.sendRaw(serializeFrame(frame));
   }
 
+  /**
+   * Seal + deliver one frame to a specific paired device. Prefers that
+   * device's LAN socket; falls back to the active-peer relay room only
+   * when the target is the active peer (relay is one room at a time).
+   */
+  private async sendEncryptedTo(
+    peerId: string,
+    peer: PeerPublicKeys,
+    body: MessageBody,
+  ): Promise<void> {
+    const raw = serializeFrame(encryptFrame(body, this.local, peer));
+    const connId = this.connByDevice.get(peerId);
+    if (connId !== undefined) {
+      try {
+        await invoke("ws_send_to", { connId, message: raw });
+        return;
+      } catch (e) {
+        this.connByDevice.delete(peerId);
+        if (peerId === this.activePeerId) {
+          return this.sendViaRelay(raw, e);
+        }
+        throw e instanceof Error ? e : new Error(String(e));
+      }
+    }
+    if (peerId === this.activePeerId) {
+      return this.sendViaRelay(
+        raw,
+        "shared fan-out: active peer socket unknown",
+      );
+    }
+    throw new Error(`host ${peerId} not connected`);
+  }
+
+  /**
+   * Notes / secrets / vault key are shared state: every paired host that
+   * is reachable gets its own sealed copy (matches mobile fan-out).
+   */
+  private async fanOutShared(
+    build: (peerId: string) => MessageBody | null,
+  ): Promise<void> {
+    if (this.peerMap.size === 0) throw new Error("no peer paired");
+    let sent = 0;
+    let lastError: unknown;
+    for (const [peerId, peer] of this.peerMap) {
+      const body = build(peerId);
+      if (!body) continue;
+      try {
+        await this.sendEncryptedTo(peerId, peer, body);
+        sent += 1;
+      } catch (e) {
+        lastError = e;
+        this.handlers.onLog(
+          `fan-out skip ${peerId}: ${e instanceof Error ? e.message : String(e)}`,
+        );
+      }
+    }
+    if (sent === 0) {
+      throw lastError instanceof Error
+        ? lastError
+        : new Error("no host connected");
+    }
+  }
+
   async sendShareUrl(urlInput: string): Promise<void> {
     const body = shareUrlBody(
       this.local.deviceId,
@@ -822,15 +885,21 @@ export class SyncSession {
     body: string;
     updatedAt: number;
   }): Promise<void> {
-    const body = noteUpsertBody(this.local.deviceId, note, this.peer?.deviceId);
-    if (!body) throw new Error("invalid note");
-    await this.sendBody(body);
+    if (!noteUpsertBody(this.local.deviceId, note)) {
+      throw new Error("invalid note");
+    }
+    await this.fanOutShared((peerId) =>
+      noteUpsertBody(this.local.deviceId, note, peerId),
+    );
   }
 
   async sendNoteDelete(note: { id: string; updatedAt: number }): Promise<void> {
-    const body = noteDeleteBody(this.local.deviceId, note, this.peer?.deviceId);
-    if (!body) throw new Error("invalid note delete");
-    await this.sendBody(body);
+    if (!noteDeleteBody(this.local.deviceId, note)) {
+      throw new Error("invalid note delete");
+    }
+    await this.fanOutShared((peerId) =>
+      noteDeleteBody(this.local.deviceId, note, peerId),
+    );
   }
 
   async sendSecretUpsert(secret: {
@@ -840,35 +909,32 @@ export class SyncSession {
     nonce: string;
     meta: SecretUpsertPayload["meta"];
   }): Promise<void> {
-    const body = secretUpsertBody(
-      this.local.deviceId,
-      secret,
-      this.peer?.deviceId,
+    if (!secretUpsertBody(this.local.deviceId, secret)) {
+      throw new Error("invalid secret");
+    }
+    await this.fanOutShared((peerId) =>
+      secretUpsertBody(this.local.deviceId, secret, peerId),
     );
-    if (!body) throw new Error("invalid secret");
-    await this.sendBody(body);
   }
 
   async sendSecretDelete(secret: {
     id: string;
     updatedAt: number;
   }): Promise<void> {
-    const body = secretDeleteBody(
-      this.local.deviceId,
-      secret,
-      this.peer?.deviceId,
+    if (!secretDeleteBody(this.local.deviceId, secret)) {
+      throw new Error("invalid secret delete");
+    }
+    await this.fanOutShared((peerId) =>
+      secretDeleteBody(this.local.deviceId, secret, peerId),
     );
-    if (!body) throw new Error("invalid secret delete");
-    await this.sendBody(body);
   }
 
   async sendVaultKeyShare(keyHex: string): Promise<void> {
-    const body = vaultKeyShareBody(
-      this.local.deviceId,
-      keyHex,
-      this.peer?.deviceId,
+    if (!vaultKeyShareBody(this.local.deviceId, keyHex)) {
+      throw new Error("invalid vault key");
+    }
+    await this.fanOutShared((peerId) =>
+      vaultKeyShareBody(this.local.deviceId, keyHex, peerId),
     );
-    if (!body) throw new Error("invalid vault key");
-    await this.sendBody(body);
   }
 }

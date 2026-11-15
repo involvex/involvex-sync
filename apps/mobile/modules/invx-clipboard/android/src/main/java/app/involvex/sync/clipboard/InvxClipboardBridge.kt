@@ -2,19 +2,33 @@ package app.involvex.sync.clipboard
 
 import android.content.ClipData
 import android.content.ClipboardManager
+import android.content.ComponentName
 import android.content.Context
+import android.content.ServiceConnection
+import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.net.Uri
+import android.os.Handler
+import android.os.IBinder
+import android.os.Looper
+import android.os.RemoteException
 import android.util.Base64
+import android.util.Log
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.FileOutputStream
+import rikka.shizuku.Shizuku
 
 object InvxClipboardBridge {
   const val PREFS = "invx_clipboard"
   const val KEY_AUTO = "auto_enabled"
   const val KEY_IMAGES = "include_images"
+  const val KEY_SHIZUKU = "shizuku_enabled"
+
+  private const val TAG = "InvxClipboardBridge"
+  private const val REQUEST_CODE_SHIZUKU = 7913
+  private const val SHIZUKU_POLL_MS = 1200L
 
   @Volatile
   var onText: ((String) -> Unit)? = null
@@ -38,6 +52,75 @@ object InvxClipboardBridge {
   private var lastFingerprint: String? = null
 
   private var listener: ClipboardManager.OnPrimaryClipChangedListener? = null
+
+  // --- Shizuku background path ---
+
+  @Volatile
+  private var appContext: Context? = null
+
+  @Volatile
+  private var shizukuWanted = false
+
+  @Volatile
+  private var shizukuListening = false
+
+  @Volatile
+  private var shizukuBound = false
+
+  @Volatile
+  private var shizukuNeedReboot = false
+
+  @Volatile
+  private var shizukuListenersReady = false
+
+  @Volatile
+  private var shizukuService: IInvxClipboardUserService? = null
+
+  private var userServiceArgs: Shizuku.UserServiceArgs? = null
+
+  private val shizukuHandler = Handler(Looper.getMainLooper())
+
+  private var shizukuPollRunnable: Runnable? = null
+
+  private val shizukuPermissionListener =
+    Shizuku.OnRequestPermissionResultListener { requestCode, grantResult ->
+      if (requestCode != REQUEST_CODE_SHIZUKU) return@OnRequestPermissionResultListener
+      val ctx = appContext ?: return@OnRequestPermissionResultListener
+      if (grantResult == PackageManager.PERMISSION_GRANTED) {
+        shizukuNeedReboot = false
+        if (shizukuWanted) bindShizuku(ctx)
+      } else {
+        Log.i(TAG, "Shizuku permission denied")
+      }
+    }
+
+  private val shizukuServiceConnection =
+    object : ServiceConnection {
+      override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
+        if (binder != null && binder.pingBinder()) {
+          shizukuService = IInvxClipboardUserService.Stub.asInterface(binder)
+          shizukuListening = true
+          shizukuBound = true
+          shizukuNeedReboot = false
+          startShizukuPoll()
+          Log.i(TAG, "Shizuku UserService connected")
+        } else {
+          Log.w(TAG, "Shizuku UserService dead binder on connect")
+          shizukuService = null
+          shizukuListening = false
+          shizukuBound = false
+          shizukuNeedReboot = true
+        }
+      }
+
+      override fun onServiceDisconnected(name: ComponentName?) {
+        Log.i(TAG, "Shizuku UserService disconnected")
+        stopShizukuPoll()
+        shizukuService = null
+        shizukuListening = false
+        shizukuBound = false
+      }
+    }
 
   fun setAutoEnabled(context: Context, enabled: Boolean) {
     context
@@ -71,6 +154,57 @@ object InvxClipboardBridge {
     return context
       .getSharedPreferences(PREFS, Context.MODE_PRIVATE)
       .getBoolean(KEY_IMAGES, true)
+  }
+
+  fun setShizukuEnabled(context: Context, enabled: Boolean) {
+    appContext = context.applicationContext
+    context
+      .getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+      .edit()
+      .putBoolean(KEY_SHIZUKU, enabled)
+      .apply()
+    shizukuWanted = enabled
+    if (enabled) {
+      ensureShizukuListeners()
+      tryEnableShizuku(context.applicationContext)
+    } else {
+      unbindShizuku()
+      shizukuNeedReboot = false
+    }
+  }
+
+  fun isShizukuEnabled(context: Context): Boolean {
+    return context
+      .getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+      .getBoolean(KEY_SHIZUKU, false)
+  }
+
+  fun shizukuStatus(context: Context): Map<String, Any> {
+    appContext = context.applicationContext
+    val available = pingShizuku()
+    val authorized =
+      available &&
+        try {
+          Shizuku.checkSelfPermission() == PackageManager.PERMISSION_GRANTED
+        } catch (_: Throwable) {
+          false
+        }
+    val listening = shizukuListening && shizukuService != null
+    val status =
+      when {
+        shizukuNeedReboot -> "need_reboot"
+        !available -> "unavailable"
+        !authorized -> "unauthorized"
+        listening -> "listening"
+        authorized -> "authorized"
+        else -> "unavailable"
+      }
+    return mapOf(
+      "status" to status,
+      "available" to available,
+      "authorized" to authorized,
+      "listening" to listening,
+    )
   }
 
   fun setAppForeground(context: Context, foreground: Boolean) {
@@ -251,6 +385,148 @@ object InvxClipboardBridge {
       )
     } catch (_: Exception) {
       null
+    }
+  }
+
+  private fun ensureShizukuListeners() {
+    if (shizukuListenersReady) return
+    try {
+      Shizuku.addRequestPermissionResultListener(shizukuPermissionListener)
+      Shizuku.addBinderReceivedListenerSticky {
+        shizukuNeedReboot = false
+        val ctx = appContext ?: return@addBinderReceivedListenerSticky
+        if (shizukuWanted || isShizukuEnabled(ctx)) {
+          tryEnableShizuku(ctx)
+        }
+      }
+      Shizuku.addBinderDeadListener {
+        stopShizukuPoll()
+        shizukuService = null
+        shizukuListening = false
+        shizukuBound = false
+        if (shizukuWanted) {
+          shizukuNeedReboot = true
+        }
+        Log.i(TAG, "Shizuku binder dead")
+      }
+      shizukuListenersReady = true
+    } catch (e: Throwable) {
+      Log.w(TAG, "Failed to register Shizuku listeners", e)
+    }
+  }
+
+  private fun pingShizuku(): Boolean {
+    return try {
+      Shizuku.pingBinder()
+    } catch (_: Throwable) {
+      false
+    }
+  }
+
+  private fun tryEnableShizuku(context: Context) {
+    appContext = context.applicationContext
+    if (!pingShizuku()) {
+      Log.i(TAG, "Shizuku not available")
+      return
+    }
+    val granted =
+      try {
+        Shizuku.checkSelfPermission() == PackageManager.PERMISSION_GRANTED
+      } catch (_: Throwable) {
+        false
+      }
+    if (!granted) {
+      try {
+        Shizuku.requestPermission(REQUEST_CODE_SHIZUKU)
+      } catch (e: Throwable) {
+        Log.w(TAG, "Shizuku.requestPermission failed", e)
+      }
+      return
+    }
+    shizukuNeedReboot = false
+    bindShizuku(context.applicationContext)
+  }
+
+  private fun bindShizuku(context: Context) {
+    if (shizukuListening && shizukuService != null) return
+    if (!pingShizuku()) return
+    try {
+      if (Shizuku.getVersion() < 10) {
+        Log.w(TAG, "Shizuku API < 10; UserService unsupported")
+        return
+      }
+      val args =
+        Shizuku.UserServiceArgs(
+          ComponentName(
+            context.packageName,
+            InvxClipboardUserService::class.java.name,
+          ),
+        )
+          .daemon(false)
+          .processNameSuffix("clip")
+          .version(1)
+      userServiceArgs = args
+      Shizuku.bindUserService(args, shizukuServiceConnection)
+      Log.i(TAG, "Shizuku.bindUserService requested")
+    } catch (e: Throwable) {
+      Log.w(TAG, "bindUserService failed", e)
+      shizukuNeedReboot = true
+    }
+  }
+
+  private fun unbindShizuku() {
+    stopShizukuPoll()
+    shizukuService = null
+    shizukuListening = false
+    val args = userServiceArgs
+    if (args != null && shizukuBound) {
+      try {
+        Shizuku.unbindUserService(args, shizukuServiceConnection, true)
+      } catch (e: Throwable) {
+        Log.w(TAG, "unbindUserService failed", e)
+      }
+    }
+    shizukuBound = false
+  }
+
+  private fun startShizukuPoll() {
+    stopShizukuPoll()
+    val runnable =
+      object : Runnable {
+        override fun run() {
+          pollShizukuOnce()
+          shizukuHandler.postDelayed(this, SHIZUKU_POLL_MS)
+        }
+      }
+    shizukuPollRunnable = runnable
+    shizukuHandler.post(runnable)
+  }
+
+  private fun stopShizukuPoll() {
+    shizukuPollRunnable?.let { shizukuHandler.removeCallbacks(it) }
+    shizukuPollRunnable = null
+  }
+
+  private fun pollShizukuOnce() {
+    val ctx = appContext ?: return
+    if (!shizukuWanted || !isAutoEnabled(ctx) || !shizukuListening) return
+    val remote = shizukuService ?: return
+    try {
+      val text = remote.primaryText?.trim().orEmpty()
+      if (text.isEmpty()) return
+      val fp = "t:${text.hashCode()}"
+      if (fp == lastFingerprint) return
+      lastFingerprint = fp
+      onText?.invoke(text)
+    } catch (_: RemoteException) {
+      Log.w(TAG, "Shizuku poll RemoteException — marking need_reboot")
+      stopShizukuPoll()
+      shizukuService = null
+      shizukuListening = false
+      shizukuBound = false
+      shizukuNeedReboot = true
+    } catch (e: Exception) {
+      Log.w(TAG, "Shizuku poll failed", e)
     }
   }
 }

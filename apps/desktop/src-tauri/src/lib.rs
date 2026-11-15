@@ -26,6 +26,7 @@ struct AppState {
     mdns: Mutex<Option<MdnsAdvertiser>>,
     folder_sync: folder_sync::FolderSyncState,
     scrcpy: shell::ScrcpyState,
+    control_snap: Arc<Mutex<control::ControlSnapshot>>,
 }
 
 #[derive(Serialize)]
@@ -45,6 +46,14 @@ fn get_lan_info(state: State<'_, AppState>) -> LanInfo {
         port: DEFAULT_PORT,
         status: state.hub.status(),
     }
+}
+
+#[tauri::command]
+fn control_publish_snapshot(
+    state: State<'_, AppState>,
+    snap: control::ControlSnapshot,
+) {
+    *state.control_snap.lock() = snap;
 }
 
 #[tauri::command]
@@ -395,6 +404,7 @@ pub fn run() {
     bootlog::write("run() start");
 
     let hub = WsHub::new(DEFAULT_PORT);
+    let control_snap = Arc::new(Mutex::new(control::ControlSnapshot::default()));
 
     let app = match tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
@@ -409,6 +419,7 @@ pub fn run() {
             mdns: Mutex::new(None),
             folder_sync: folder_sync::FolderSyncState::default(),
             scrcpy: shell::ScrcpyState::default(),
+            control_snap: control_snap.clone(),
         })
         .setup(move |app| {
             bootlog::write("setup begin");
@@ -422,7 +433,12 @@ pub fn run() {
                 }
             });
 
-            control::start(app.handle().clone(), hub.clone(), Arc::new(std::sync::atomic::AtomicBool::new(true)));
+            control::start(
+                app.handle().clone(),
+                hub.clone(),
+                Arc::new(std::sync::atomic::AtomicBool::new(true)),
+                control_snap.clone(),
+            );
 
             match setup_tray(app) {
                 Ok(()) => {}
@@ -448,6 +464,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             get_lan_info,
+            control_publish_snapshot,
             ws_send,
             ws_send_to,
             ws_conns,

@@ -127,6 +127,17 @@ export function makeStyles(c: ThemeColors) {
       textTransform: "uppercase",
     },
     segmentTextOn: { color: "#fff" },
+    themeChips: {
+      flexDirection: "row",
+      flexWrap: "wrap",
+      gap: 8,
+    },
+    themeChip: {
+      backgroundColor: c.segmentBg,
+      borderRadius: 10,
+      paddingHorizontal: 12,
+      paddingVertical: 8,
+    },
     nearbyRow: {
       flexDirection: "row",
       alignItems: "center",

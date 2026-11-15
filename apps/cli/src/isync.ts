@@ -18,7 +18,22 @@ type Status = {
   listening?: boolean;
   lanPort?: number;
   windowVisible?: boolean;
+  activePeerId?: string | null;
+  peerCount?: number;
   error?: string;
+};
+
+type ControlPeer = {
+  deviceId: string;
+  name: string;
+  connected: boolean;
+};
+
+type ControlNote = {
+  id: string;
+  title: string;
+  body: string;
+  updatedAt: number;
 };
 
 function usage(exitCode = 1): never {
@@ -27,6 +42,13 @@ function usage(exitCode = 1): never {
 Usage:
   isync status                 Desktop + peer status
   isync show                   Bring the desktop window forward
+  isync peers                  List paired peers
+  isync peer use <id>          Select active peer
+  isync notes list             List synced notes
+  isync notes add <title> …    Add a note (body from rest args or stdin)
+  isync file <path>            Send a file to the active peer
+  isync remote termux <cmd>    Run a Termux command on the phone
+  isync remote pwsh <cmd>      Run PowerShell locally via the desktop app
   isync clipboard get          Print OS clipboard
   isync clipboard set [text]   Set OS clipboard (stdin if no text)
   isync clipboard push         Push OS clipboard to the phone
@@ -39,7 +61,7 @@ Usage:
   isync escrcpy open           Open Escrcpy GUI for the selected device
 
 Requires the desktop app running for share / push / find / keyboard / screenshot /
-mirror / escrcpy / status.
+mirror / escrcpy / peers / notes / file / remote / status.
 `);
   process.exit(exitCode);
 }
@@ -172,8 +194,12 @@ async function main(): Promise<void> {
     const peer = st.peerConnected
       ? `peer connected${st.peerAddr ? ` (${st.peerAddr})` : ""}`
       : "no peer";
+    const peerInfo =
+      st.peerCount != null
+        ? ` · ${st.peerCount} paired${st.activePeerId ? ` · active ${st.activePeerId}` : ""}`
+        : "";
     console.log(
-      `desktop ok · lan :${st.lanPort ?? "?"} · ${peer} · window ${st.windowVisible ? "visible" : "hidden"}`,
+      `desktop ok · lan :${st.lanPort ?? "?"} · ${peer}${peerInfo} · window ${st.windowVisible ? "visible" : "hidden"}`,
     );
     return;
   }
@@ -309,6 +335,122 @@ async function main(): Promise<void> {
       process.exit(1);
     }
     console.log("escrcpy open requested");
+    return;
+  }
+
+  if (cmd === "peers") {
+    await requireDesktop();
+    const { status, text } = await control("GET", "/v1/peers");
+    if (status >= 400) {
+      console.error(text);
+      process.exit(1);
+    }
+    const peers = JSON.parse(text) as ControlPeer[];
+    if (peers.length === 0) {
+      console.log("no peers paired");
+      return;
+    }
+    for (const p of peers) {
+      console.log(`${p.connected ? "●" : "○"} ${p.name}\t${p.deviceId}`);
+    }
+    return;
+  }
+
+  if (cmd === "peer") {
+    if (sub !== "use" || !rest[0]) {
+      console.error("usage: isync peer use <deviceId>");
+      process.exit(1);
+    }
+    await requireDesktop();
+    const { status, text } = await control("POST", "/v1/peer", rest[0]);
+    if (status >= 400) {
+      console.error(text);
+      process.exit(1);
+    }
+    console.log(`active peer → ${rest[0]}`);
+    return;
+  }
+
+  if (cmd === "notes") {
+    await requireDesktop();
+    if (sub === "list") {
+      const { status, text } = await control("GET", "/v1/notes");
+      if (status >= 400) {
+        console.error(text);
+        process.exit(1);
+      }
+      const notes = JSON.parse(text) as ControlNote[];
+      if (notes.length === 0) {
+        console.log("no notes");
+        return;
+      }
+      for (const n of notes) {
+        const preview = (n.body || "").replace(/\s+/g, " ").slice(0, 60);
+        console.log(`${n.id}\t${n.title}${preview ? ` — ${preview}` : ""}`);
+      }
+      return;
+    }
+    if (sub === "add") {
+      const title = rest[0];
+      if (!title) {
+        console.error("usage: isync notes add <title> [body…]");
+        process.exit(1);
+      }
+      const bodyFromArgs = rest.slice(1).join(" ");
+      const body = bodyFromArgs || (await readStdin());
+      const { status, text } = await control(
+        "POST",
+        "/v1/notes",
+        JSON.stringify({ title, body }),
+      );
+      if (status >= 400) {
+        console.error(text);
+        process.exit(1);
+      }
+      console.log(`note added: ${title}`);
+      return;
+    }
+    usage();
+  }
+
+  if (cmd === "file") {
+    const path = sub ?? (await readStdin());
+    if (!path.trim()) {
+      console.error("usage: isync file <absolute-path>");
+      process.exit(1);
+    }
+    await requireDesktop();
+    const { status, text } = await control("POST", "/v1/file", path.trim());
+    if (status >= 400) {
+      console.error(text);
+      process.exit(1);
+    }
+    console.log(`file send requested: ${path.trim()}`);
+    return;
+  }
+
+  if (cmd === "remote") {
+    const shell = sub;
+    if (shell !== "termux" && shell !== "pwsh") {
+      console.error("usage: isync remote <termux|pwsh> <command…>");
+      process.exit(1);
+    }
+    const command = rest.join(" ") || (await readStdin());
+    if (!command.trim()) {
+      console.error("nothing to run — pass a command or pipe stdin");
+      process.exit(1);
+    }
+    await requireDesktop();
+    const { status, text } = await control(
+      "POST",
+      "/v1/remote",
+      JSON.stringify({ shell, command: command.trim() }),
+    );
+    if (status >= 400) {
+      console.error(text);
+      process.exit(1);
+    }
+    console.log(`remote ${shell} requested`);
     return;
   }
 
