@@ -1,5 +1,5 @@
 import { PermissionsAndroid, Platform } from "react-native";
-import { requireNativeModule } from "expo-modules-core";
+import { requireNativeModule } from "expo";
 import {
   TERMUX_PACKAGE,
   TERMUX_RUN_COMMAND_ACTION,

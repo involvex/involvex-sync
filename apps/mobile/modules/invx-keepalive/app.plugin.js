@@ -1,4 +1,4 @@
-const { withAndroidManifest, AndroidConfig } = require("@expo/config-plugins");
+const { withAndroidManifest, AndroidConfig } = require("expo/config-plugins");
 
 function withInvxKeepalive(config) {
   return withAndroidManifest(config, (cfg) => {

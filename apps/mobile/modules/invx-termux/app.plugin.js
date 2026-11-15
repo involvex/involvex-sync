@@ -1,4 +1,4 @@
-const { withAndroidManifest, AndroidConfig } = require("@expo/config-plugins");
+const { withAndroidManifest, AndroidConfig } = require("expo/config-plugins");
 
 const TERMUX_PACKAGE = "com.involvex.termux_app";
 const RUN_COMMAND_PERMISSION = `${TERMUX_PACKAGE}.permission.RUN_COMMAND`;

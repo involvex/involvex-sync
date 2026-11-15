@@ -1,4 +1,4 @@
-const { withAndroidManifest, AndroidConfig } = require("@expo/config-plugins");
+const { withAndroidManifest, AndroidConfig } = require("expo/config-plugins");
 
 /**
  * Registers AccessibilityService for optional PC→phone text injection

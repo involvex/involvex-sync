@@ -1,4 +1,4 @@
-const { withAndroidManifest, AndroidConfig } = require("@expo/config-plugins");
+const { withAndroidManifest, AndroidConfig } = require("expo/config-plugins");
 
 /**
  * Add ACTION_SEND / SEND_MULTIPLE on the launcher activity for text + files.

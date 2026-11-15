@@ -1,26 +1,19 @@
 const { getDefaultConfig } = require("expo/metro-config");
-const { resolve: metroResolve } = require("metro-resolver");
 const path = require("node:path");
 const fs = require("node:fs");
 
 const projectRoot = __dirname;
-const workspaceRoot = path.resolve(projectRoot, "../..");
 
+/** @type {import('expo/metro-config').MetroConfig} */
 const config = getDefaultConfig(projectRoot);
 
-config.watchFolders = [workspaceRoot];
-config.resolver.nodeModulesPaths = [
-  path.resolve(projectRoot, "node_modules"),
-  path.resolve(workspaceRoot, "node_modules"),
-];
-config.resolver.disableHierarchicalLookup = true;
-config.resolver.extraNodeModules = {
-  "@involvex/protocol": path.resolve(workspaceRoot, "packages/protocol"),
-};
-
 /**
- * Map TypeScript ESM "./foo.js" imports to "./foo.ts" when the .js file
- * is missing (Metro does not do this itself).
+ * Keep only project-specific resolvers. Expo SDK 52+ configures monorepo
+ * watchFolders / nodeModulesPaths / disableHierarchicalLookup automatically —
+ * overriding them trips expo-doctor and can break resolution.
+ *
+ * Map TypeScript ESM "./foo.js" imports to "./foo.ts" when the .js file is
+ * missing (Metro does not do this itself), and shim @noble/hashes crypto.
  */
 const cryptoShim = path.resolve(projectRoot, "src/cryptoShim.js");
 
@@ -51,7 +44,7 @@ config.resolver.resolveRequest = (context, moduleName, platform) => {
     }
   }
 
-  return metroResolve(context, moduleName, platform);
+  return context.resolveRequest(context, moduleName, platform);
 };
 
 module.exports = config;
