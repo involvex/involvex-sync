@@ -82,7 +82,7 @@ import {
 } from "./services/gwsDrive";
 import {
   loadSettings,
-  resolveThemeMode,
+  resolveTheme,
   saveSettings,
   type DesktopSettings,
 } from "./services/settings";
@@ -328,7 +328,7 @@ export default function App() {
       const systemDark = window.matchMedia(
         "(prefers-color-scheme: dark)",
       ).matches;
-      const mode = resolveThemeMode(settings.theme, systemDark);
+      const mode = resolveTheme(settings.theme, systemDark);
       document.documentElement.dataset.theme = mode;
     };
     applyTheme();
