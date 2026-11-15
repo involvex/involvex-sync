@@ -13,6 +13,10 @@ android {
     targetSdkVersion safeExtGet("targetSdkVersion", 35)
   }
 
+  buildFeatures {
+    aidl true
+  }
+
   lintOptions {
     abortOnError false
   }
@@ -21,6 +25,8 @@ android {
 dependencies {
   implementation project(':expo-modules-core')
   implementation 'androidx.core:core-ktx:1.15.0'
+  implementation 'dev.rikka.shizuku:api:13.1.5'
+  implementation 'dev.rikka.shizuku:provider:13.1.5'
 }
 
 def safeExtGet(prop, fallback) {

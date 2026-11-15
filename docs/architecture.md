@@ -42,18 +42,19 @@
   Use the explicit Send link UI for `share_url` open-in-browser.
 - Echo suppression uses `LoopGuard` on text or image content hash.
 - Not Microsoft Phone Link — same E2E stack as the rest of Sync.
-- **Future (not built):** true background phone→PC without IME could use
-  **Shizuku** (privileged clipboard binder as shell UID) or an overlay
-  focus trick. Design sketch: opt-in Settings toggle → bind Shizuku user
-  service → poll/`ContentObserver`-style clipboard callbacks as shell UID →
-  existing `sendClipboard` path. Shizuku needs the Shizuku app authorized +
-  restarted after reboot; OEM battery killers still apply. Keep Share / IME
-  as defaults until that ships.
+- **Shizuku background clipboard (opt-in):** Settings toggle “Background
+  clipboard (Shizuku)” (requires Auto sync). Binds a Shizuku UserService that
+  polls primary text every ~1.2 s as shell UID and emits into the same
+  `onClipboardText` → `sendClipboard` path. Text-only in the MVP (images still
+  need foreground / IME when `autoClipboardImages` is on). No overlay focus
+  trick and no auto-install of Shizuku. Re-authorize after reboot; OEM battery
+  killers may still stop background work. Share / IME remain the defaults.
 
 ## Android constraints
 
 - Background clipboard read is blocked (Android 10+). Share sheet is the
-  reliable path; auto sync needs foreground or Sync Keyboard IME.
+  reliable path; auto sync needs foreground, Sync Keyboard IME, or the
+  opt-in Shizuku UserService poll (text-only).
 - Opening a browser from the background uses a high-priority notification; tap runs `ACTION_VIEW`.
 - Keepalive uses a `dataSync` foreground service so the WebSocket can stay up.
 - Cleartext `ws://` LAN is allowed via config plugin `plugins/withCleartextTraffic.js`
@@ -160,7 +161,9 @@ supported topology. Each pairing is an independent, symmetric relationship.
 - **Active peer:** each side has one send target (desktop dropdown / mobile
   “Use”). Clipboard, files, find-phone and remote commands go to the active
   device; notes, secrets and the vault key are shared state and go to every
-  connected host.
+  connected host (mobile loops open sockets; desktop `fanOutShared` seals a
+  copy per paired peer and delivers via that peer’s LAN socket, with relay
+  fallback only for the active peer’s room).
 - **Pairing replies:** pair requests are queued with the socket they arrived
   on, so `accept`/`reject` answer on the same connection.
 - **Desktop sockets:** one task per connection (`ws.rs`), keyed by conn id.

@@ -128,6 +128,7 @@ import {
   upsertLocalSecret,
   type StoredSecret,
 } from "./services/secretsStore";
+import { NotesVaultPanel } from "./components/NotesVaultPanel";
 import "./App.css";
 
 type SyncFileInfo = {
@@ -168,6 +169,7 @@ type NavTab =
   | "connection"
   | "send"
   | "files"
+  | "notes"
   | "commands"
   | "keyboard"
   | "history"
@@ -220,6 +222,7 @@ const NAV_LABELS: Record<NavTab, string> = {
   connection: "Connection",
   send: "Send",
   files: "Files",
+  notes: "Notes",
   commands: "Commands",
   keyboard: "Keyboard",
   history: "History",
@@ -707,6 +710,10 @@ export default function App() {
     }).then(setQrDataUrl);
   }, [identity, lan]);
 
+  const live = Boolean(peer && lan?.status.peerConnected);
+  const liveRef = useRef(live);
+  liveRef.current = live;
+
   // Early ws-message queue so cold-start pair requests are not dropped.
   useEffect(() => {
     const unsubs: Array<() => void> = [];
@@ -859,15 +866,185 @@ export default function App() {
           void onOpenEscrcpyRef.current();
         }),
       );
+      unsubs.push(
+        await listen<string>("isync-peer", (e) => {
+          const deviceId = (e.payload || "").trim();
+          if (!deviceId) return;
+          setActivePeerId(deviceId);
+          sessionRef.current?.setActivePeer(deviceId);
+          log(`isync peer → ${deviceId}`);
+        }),
+      );
+      unsubs.push(
+        await listen<string>("isync-notes", (e) => {
+          void (async () => {
+            try {
+              const raw = JSON.parse(e.payload) as {
+                title?: string;
+                body?: string;
+              };
+              const title = (raw.title ?? "").trim();
+              if (!title && !(raw.body ?? "").trim()) {
+                log(`isync notes ignored: ${e.payload}`);
+                return;
+              }
+              const {
+                notes: next,
+                note,
+                pending,
+              } = upsertLocalNote({
+                title: title || "Untitled",
+                body: raw.body ?? "",
+              });
+              setNotes(next);
+              const s = sessionRef.current;
+              if (s && liveRef.current) {
+                try {
+                  await s.sendNoteUpsert(note);
+                  clearPendingNoteOps(
+                    pending.filter(
+                      (p) =>
+                        !(p.op === "upsert" && p.note.id === note.id) &&
+                        !(p.op === "delete" && p.id === note.id),
+                    ),
+                  );
+                } catch (err) {
+                  log(`isync notes sync queued: ${String(err)}`);
+                }
+              }
+              log(`isync notes → ${note.title}`);
+              toast(`Note saved: ${note.title}`, "ok");
+            } catch (err) {
+              log(`isync notes failed: ${String(err)}`);
+            }
+          })();
+        }),
+      );
+      unsubs.push(
+        await listen<string>("isync-file", (e) => {
+          void (async () => {
+            const s = sessionRef.current;
+            if (!s) return;
+            const path = (e.payload || "").trim();
+            if (!path) return;
+            try {
+              const dataBase64 = await invoke<string>("read_file_base64", {
+                path,
+              });
+              const data = fromBase64(dataBase64);
+              if (data.byteLength > MAX_CHUNKED_FILE_BYTES) {
+                log(`isync file too large: ${path}`);
+                toast("File too large", "err");
+                return;
+              }
+              const name =
+                path.replace(/\\/g, "/").split("/").pop() || "file.bin";
+              await s.sendFile({
+                name,
+                mimeType: "application/octet-stream",
+                data,
+              });
+              log(`isync file → ${name} (${data.byteLength} B)`);
+              toast(`Sent ${name}`, "ok");
+            } catch (err) {
+              log(`isync file failed: ${String(err)}`);
+              toast("Send file failed", "err");
+            }
+          })();
+        }),
+      );
+      unsubs.push(
+        await listen<string>("isync-remote", (e) => {
+          void (async () => {
+            try {
+              const raw = JSON.parse(e.payload) as {
+                shell?: string;
+                command?: string;
+              };
+              const shell = (raw.shell ?? "").trim();
+              const command = (raw.command ?? "").trim();
+              if (!command || (shell !== "termux" && shell !== "pwsh")) {
+                log(`isync remote ignored: ${e.payload}`);
+                return;
+              }
+              if (shell === "termux") {
+                const s = sessionRef.current;
+                if (!s || !liveRef.current) {
+                  log("isync remote termux: phone not connected");
+                  toast("Phone not connected", "err");
+                  return;
+                }
+                const requestId = crypto
+                  .randomUUID()
+                  .replace(/-/g, "")
+                  .slice(0, 16);
+                await s.sendRemoteCommand({
+                  requestId,
+                  shell: "termux",
+                  command,
+                  timeoutMs: 30_000,
+                });
+                log(`isync remote termux → phone: ${command}`);
+                toast("Termux command sent", "ok");
+                return;
+              }
+              // pwsh: run locally (same path as inbound remote_command from phone)
+              if (!settingsRef.current.allowRemotePwsh) {
+                log("isync remote pwsh denied (enable in Settings)");
+                toast("Remote PowerShell blocked — enable in Settings", "err");
+                return;
+              }
+              const result = await invoke<ShellResult>("run_pwsh", {
+                command,
+                timeoutMs: 30_000,
+              });
+              log(
+                `isync remote pwsh ${result.ok ? "ok" : "fail"} exit=${result.exitCode ?? "?"}`,
+              );
+              setCmdOutput(
+                [result.stdout, result.stderr].filter(Boolean).join("\n") ||
+                  `(exit ${result.exitCode ?? "?"})`,
+              );
+              toast(
+                result.ok ? "PowerShell done" : "PowerShell failed",
+                result.ok ? "ok" : "err",
+              );
+            } catch (err) {
+              log(`isync remote failed: ${String(err)}`);
+              toast("Remote command failed", "err");
+            }
+          })();
+        }),
+      );
     })();
     return () => {
       for (const u of unsubs) u();
     };
   }, [log, pushHistory, toast]);
 
-  const live = Boolean(peer && lan?.status.peerConnected);
-  const liveRef = useRef(live);
-  liveRef.current = live;
+  // Publish peers/notes snapshot for the loopback isync control plane.
+  useEffect(() => {
+    const s = sessionRef.current;
+    const snap = {
+      activePeerId,
+      peers: peers.map((p) => ({
+        deviceId: p.deviceId,
+        name: p.name,
+        connected:
+          s?.connIdFor(p.deviceId) !== undefined ||
+          (live && p.deviceId === activePeerId),
+      })),
+      notes: notes.map((n) => ({
+        id: n.id,
+        title: n.title,
+        body: n.body,
+        updatedAt: n.updatedAt,
+      })),
+    };
+    void invoke("control_publish_snapshot", { snap }).catch((err) =>
+      log(`control snapshot: ${String(err)}`),
+    );
+  }, [peers, activePeerId, notes, live, lan?.status.peerConnected, log]);
 
   const flushNotesAndSecrets = useCallback(async () => {
     const s = sessionRef.current;
@@ -2620,404 +2797,236 @@ export default function App() {
               Read-only: opens files in the Drive web UI. Folder rows drill in;
               page size {DRIVE_PAGE_SIZE_DEFAULT}.
             </p>
-            <hr className="divider" />
-            <h3>Notes</h3>
-            <p className="muted small">
-              Quick notes sync to the phone when connected
-              {live ? "." : " (offline — queued)."}
-            </p>
-            <label className="stack">
-              Title
-              <input
-                value={noteTitle}
-                onChange={(e) => setNoteTitle(e.target.value)}
-                placeholder="Untitled"
-              />
-            </label>
-            <label className="stack">
-              Note
-              <textarea
-                rows={3}
-                value={noteBody}
-                onChange={(e) => setNoteBody(e.target.value)}
-                placeholder="Write a quick note…"
-              />
-            </label>
-            <div className="row">
-              <button
-                type="button"
-                onClick={() => {
-                  if (!noteTitle.trim() && !noteBody.trim()) return;
+          </article>
+        ) : null}
+
+        {tab === "notes" ? (
+          <NotesVaultPanel
+            live={live}
+            notes={notes}
+            noteTitle={noteTitle}
+            noteBody={noteBody}
+            editingNoteId={editingNoteId}
+            onNoteTitle={setNoteTitle}
+            onNoteBody={setNoteBody}
+            onSaveNote={() => {
+              if (!noteTitle.trim() && !noteBody.trim()) return;
+              const {
+                notes: next,
+                note,
+                pending,
+              } = upsertLocalNote({
+                id: editingNoteId,
+                title: noteTitle.trim() || "Untitled",
+                body: noteBody,
+              });
+              setNotes(next);
+              setNoteTitle("");
+              setNoteBody("");
+              setEditingNoteId(undefined);
+              const s = sessionRef.current;
+              if (s && live) {
+                void s
+                  .sendNoteUpsert(note)
+                  .then(() =>
+                    clearPendingNoteOps(
+                      pending.filter(
+                        (p) =>
+                          !(p.op === "upsert" && p.note.id === note.id) &&
+                          !(p.op === "delete" && p.id === note.id),
+                      ),
+                    ),
+                  )
+                  .catch((e) => log(`note sync queued: ${String(e)}`));
+              }
+            }}
+            onCancelEdit={() => {
+              setEditingNoteId(undefined);
+              setNoteTitle("");
+              setNoteBody("");
+            }}
+            onEditNote={(n) => {
+              setEditingNoteId(n.id);
+              setNoteTitle(n.title);
+              setNoteBody(n.body);
+            }}
+            onDeleteNote={(n) => {
+              const { notes: next, pending } = deleteLocalNote(n.id);
+              setNotes(next);
+              const del = pending.find(
+                (p) => p.op === "delete" && p.id === n.id,
+              );
+              const s = sessionRef.current;
+              if (s && live && del && del.op === "delete") {
+                void s
+                  .sendNoteDelete({
+                    id: del.id,
+                    updatedAt: del.updatedAt,
+                  })
+                  .then(() =>
+                    clearPendingNoteOps(
+                      pending.filter(
+                        (p) => !(p.op === "delete" && p.id === n.id),
+                      ),
+                    ),
+                  )
+                  .catch((e) => log(`note delete queued: ${String(e)}`));
+              }
+            }}
+            vaultUnlocked={vaultUnlocked}
+            secrets={secrets}
+            secretLabel={secretLabel}
+            secretKind={secretKind}
+            secretValue={secretValue}
+            revealedSecrets={revealedSecrets}
+            onSecretLabel={setSecretLabel}
+            onSecretKind={setSecretKind}
+            onSecretValue={setSecretValue}
+            onLockVault={() => {
+              lockVault();
+              setVaultUnlocked(false);
+              setRevealedSecrets({});
+            }}
+            onUnlockVault={() => {
+              void (async () => {
+                const ok = await unlockVault();
+                setVaultUnlocked(ok && isVaultUnlocked());
+                if (!ok) toast("Could not unlock vault", "err");
+              })();
+            }}
+            onEnableVault={() => {
+              void (async () => {
+                try {
+                  const { keyHex, created } = await ensureVaultKey();
+                  setVaultUnlocked(true);
+                  if (created) {
+                    queueVaultKeyShare(keyHex);
+                    const s = sessionRef.current;
+                    if (s && live) {
+                      await s.sendVaultKeyShare(keyHex);
+                      clearPendingSecretOps(
+                        loadPendingSecretOps().filter(
+                          (p) => p.op !== "vault_key_share",
+                        ),
+                      );
+                    }
+                  }
+                  toast("Vault ready", "ok");
+                } catch (e) {
+                  toast(`Vault: ${String(e)}`, "err");
+                }
+              })();
+            }}
+            onSaveSecret={() => {
+              void (async () => {
+                if (!secretLabel.trim() || !secretValue.trim()) return;
+                try {
+                  if (!(await hasVaultKey())) {
+                    const { keyHex, created } = await ensureVaultKey();
+                    if (created) queueVaultKeyShare(keyHex);
+                  } else if (!isVaultUnlocked()) {
+                    const ok = await unlockVault();
+                    if (!ok) throw new Error("vault locked");
+                  }
+                  setVaultUnlocked(true);
                   const {
-                    notes: next,
-                    note,
+                    secrets: next,
+                    secret,
                     pending,
-                  } = upsertLocalNote({
-                    id: editingNoteId,
-                    title: noteTitle.trim() || "Untitled",
-                    body: noteBody,
+                  } = upsertLocalSecret({
+                    label: secretLabel.trim(),
+                    kind: secretKind,
+                    value: secretValue,
                   });
-                  setNotes(next);
-                  setNoteTitle("");
-                  setNoteBody("");
-                  setEditingNoteId(undefined);
+                  setSecrets(next);
+                  setSecretLabel("");
+                  setSecretValue("");
                   const s = sessionRef.current;
                   if (s && live) {
-                    void s
-                      .sendNoteUpsert(note)
-                      .then(() =>
-                        clearPendingNoteOps(
-                          pending.filter(
-                            (p) =>
-                              !(p.op === "upsert" && p.note.id === note.id) &&
-                              !(p.op === "delete" && p.id === note.id),
+                    const keyPending = pending.find(
+                      (p) => p.op === "vault_key_share",
+                    );
+                    if (keyPending && keyPending.op === "vault_key_share") {
+                      await s.sendVaultKeyShare(keyPending.keyHex);
+                    }
+                    await s.sendSecretUpsert({
+                      id: secret.id,
+                      updatedAt: secret.updatedAt,
+                      ciphertext: secret.ciphertext,
+                      nonce: secret.nonce,
+                      meta: {
+                        label: secret.label,
+                        kind: secret.kind,
+                      },
+                    });
+                    clearPendingSecretOps(
+                      pending.filter(
+                        (p) =>
+                          !(
+                            p.op === "vault_key_share" ||
+                            (p.op === "upsert" && p.secret.id === secret.id) ||
+                            (p.op === "delete" && p.id === secret.id)
                           ),
-                        ),
-                      )
-                      .catch((e) => log(`note sync queued: ${String(e)}`));
+                      ),
+                    );
                   }
-                }}
-              >
-                {editingNoteId ? "Update note" : "Save note"}
-              </button>
-              {editingNoteId ? (
-                <button
-                  type="button"
-                  className="ghost"
-                  onClick={() => {
-                    setEditingNoteId(undefined);
-                    setNoteTitle("");
-                    setNoteBody("");
-                  }}
-                >
-                  Cancel
-                </button>
-              ) : null}
-            </div>
-            <ul className="history">
-              {notes.map((n) => (
-                <li key={n.id}>
-                  <strong>{n.title}</strong>
-                  <p className="muted small">{n.body || "(empty)"}</p>
-                  <div className="row">
-                    <button
-                      type="button"
-                      className="ghost"
-                      onClick={() => {
-                        setEditingNoteId(n.id);
-                        setNoteTitle(n.title);
-                        setNoteBody(n.body);
-                      }}
-                    >
-                      Edit
-                    </button>
-                    <button
-                      type="button"
-                      className="ghost"
-                      onClick={() => {
-                        const { notes: next, pending } = deleteLocalNote(n.id);
-                        setNotes(next);
-                        const del = pending.find(
-                          (p) => p.op === "delete" && p.id === n.id,
-                        );
-                        const s = sessionRef.current;
-                        if (s && live && del && del.op === "delete") {
-                          void s
-                            .sendNoteDelete({
-                              id: del.id,
-                              updatedAt: del.updatedAt,
-                            })
-                            .then(() =>
-                              clearPendingNoteOps(
-                                pending.filter(
-                                  (p) => !(p.op === "delete" && p.id === n.id),
-                                ),
-                              ),
-                            )
-                            .catch((e) =>
-                              log(`note delete queued: ${String(e)}`),
-                            );
-                        }
-                      }}
-                    >
-                      Delete
-                    </button>
-                  </div>
-                </li>
-              ))}
-            </ul>
-            {notes.length === 0 ? (
-              <p className="muted small">No notes yet.</p>
-            ) : null}
-
-            <hr className="divider" />
-            <h3>Secrets</h3>
-            <p className="muted small">
-              API keys / passwords encrypted at rest. Unlock uses Windows
-              Credential Manager (signed-in user). Ciphertext syncs to the
-              phone.
-            </p>
-            <div className="row">
-              {vaultUnlocked ? (
-                <button
-                  type="button"
-                  className="ghost"
-                  onClick={() => {
-                    lockVault();
-                    setVaultUnlocked(false);
-                    setRevealedSecrets({});
-                  }}
-                >
-                  Lock
-                </button>
-              ) : (
-                <button
-                  type="button"
-                  onClick={() => {
-                    void (async () => {
-                      const ok = await unlockVault();
-                      setVaultUnlocked(ok && isVaultUnlocked());
-                      if (!ok) toast("Could not unlock vault", "err");
-                    })();
-                  }}
-                >
-                  Unlock
-                </button>
-              )}
-              <button
-                type="button"
-                className="ghost"
-                onClick={() => {
-                  void (async () => {
-                    try {
-                      const { keyHex, created } = await ensureVaultKey();
-                      setVaultUnlocked(true);
-                      if (created) {
-                        queueVaultKeyShare(keyHex);
-                        const s = sessionRef.current;
-                        if (s && live) {
-                          await s.sendVaultKeyShare(keyHex);
-                          clearPendingSecretOps(
-                            loadPendingSecretOps().filter(
-                              (p) => p.op !== "vault_key_share",
-                            ),
-                          );
-                        }
-                      }
-                      toast("Vault ready", "ok");
-                    } catch (e) {
-                      toast(`Vault: ${String(e)}`, "err");
-                    }
-                  })();
-                }}
-              >
-                Enable vault
-              </button>
-            </div>
-            {vaultUnlocked ? (
-              <>
-                <label className="stack">
-                  Label
-                  <input
-                    value={secretLabel}
-                    onChange={(e) => setSecretLabel(e.target.value)}
-                    placeholder="OpenAI / GitHub token"
-                  />
-                </label>
-                <label className="stack">
-                  Kind
-                  <select
-                    value={secretKind}
-                    onChange={(e) =>
-                      setSecretKind(e.target.value as SecretKind)
-                    }
-                  >
-                    <option value="api_key">api_key</option>
-                    <option value="password">password</option>
-                    <option value="token">token</option>
-                    <option value="text">text</option>
-                  </select>
-                </label>
-                <label className="stack">
-                  Value
-                  <input
-                    type="password"
-                    value={secretValue}
-                    onChange={(e) => setSecretValue(e.target.value)}
-                    placeholder="••••••••"
-                    autoComplete="off"
-                  />
-                </label>
-                <div className="row">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      void (async () => {
-                        if (!secretLabel.trim() || !secretValue.trim()) return;
-                        try {
-                          if (!(await hasVaultKey())) {
-                            const { keyHex, created } = await ensureVaultKey();
-                            if (created) queueVaultKeyShare(keyHex);
-                          } else if (!isVaultUnlocked()) {
-                            const ok = await unlockVault();
-                            if (!ok) throw new Error("vault locked");
-                          }
-                          setVaultUnlocked(true);
-                          const {
-                            secrets: next,
-                            secret,
-                            pending,
-                          } = upsertLocalSecret({
-                            label: secretLabel.trim(),
-                            kind: secretKind,
-                            value: secretValue,
-                          });
-                          setSecrets(next);
-                          setSecretLabel("");
-                          setSecretValue("");
-                          const s = sessionRef.current;
-                          if (s && live) {
-                            const keyPending = pending.find(
-                              (p) => p.op === "vault_key_share",
-                            );
-                            if (
-                              keyPending &&
-                              keyPending.op === "vault_key_share"
-                            ) {
-                              await s.sendVaultKeyShare(keyPending.keyHex);
-                            }
-                            await s.sendSecretUpsert({
-                              id: secret.id,
-                              updatedAt: secret.updatedAt,
-                              ciphertext: secret.ciphertext,
-                              nonce: secret.nonce,
-                              meta: {
-                                label: secret.label,
-                                kind: secret.kind,
-                              },
-                            });
-                            clearPendingSecretOps(
-                              pending.filter(
-                                (p) =>
-                                  !(
-                                    p.op === "vault_key_share" ||
-                                    (p.op === "upsert" &&
-                                      p.secret.id === secret.id) ||
-                                    (p.op === "delete" && p.id === secret.id)
-                                  ),
-                              ),
-                            );
-                          }
-                        } catch (e) {
-                          toast(String(e), "err");
-                        }
-                      })();
-                    }}
-                  >
-                    Save secret
-                  </button>
-                </div>
-              </>
-            ) : (
-              <p className="muted small">
-                Unlock to add or reveal values. Labels stay visible while
-                locked.
-              </p>
-            )}
-            <ul className="history">
-              {secrets.map((sec) => (
-                <li key={sec.id}>
-                  <strong>
-                    {sec.label} · {sec.kind}
-                  </strong>
-                  <p className="muted small mono">
-                    {revealedSecrets[sec.id] ?? "••••••••"}
-                  </p>
-                  <div className="row">
-                    <button
-                      type="button"
-                      className="ghost"
-                      onClick={() => {
-                        void (async () => {
-                          try {
-                            if (!isVaultUnlocked()) {
-                              const ok = await unlockVault();
-                              if (!ok) throw new Error("vault locked");
-                              setVaultUnlocked(true);
-                            }
-                            const value = revealSecretValue(sec);
-                            setRevealedSecrets((prev) => ({
-                              ...prev,
-                              [sec.id]: value,
-                            }));
-                          } catch (e) {
-                            toast(String(e), "err");
-                          }
-                        })();
-                      }}
-                    >
-                      Reveal
-                    </button>
-                    {revealedSecrets[sec.id] ? (
-                      <button
-                        type="button"
-                        className="ghost"
-                        onClick={() => {
-                          const value = revealedSecrets[sec.id];
-                          if (value) void writeText(value);
-                          toast("Copied", "ok");
-                        }}
-                      >
-                        Copy
-                      </button>
-                    ) : null}
-                    <button
-                      type="button"
-                      className="ghost"
-                      onClick={() => {
-                        const { secrets: next, pending } = deleteLocalSecret(
-                          sec.id,
-                        );
-                        setSecrets(next);
-                        setRevealedSecrets((prev) => {
-                          const n = { ...prev };
-                          delete n[sec.id];
-                          return n;
-                        });
-                        const del = pending.find(
-                          (p) => p.op === "delete" && p.id === sec.id,
-                        );
-                        const s = sessionRef.current;
-                        if (s && live && del && del.op === "delete") {
-                          void s
-                            .sendSecretDelete({
-                              id: del.id,
-                              updatedAt: del.updatedAt,
-                            })
-                            .then(() =>
-                              clearPendingSecretOps(
-                                pending.filter(
-                                  (p) =>
-                                    !(p.op === "delete" && p.id === sec.id),
-                                ),
-                              ),
-                            )
-                            .catch((e) =>
-                              log(`secret delete queued: ${String(e)}`),
-                            );
-                        }
-                      }}
-                    >
-                      Delete
-                    </button>
-                  </div>
-                </li>
-              ))}
-            </ul>
-            {secrets.length === 0 ? (
-              <p className="muted small">No secrets yet.</p>
-            ) : null}
-          </article>
+                } catch (e) {
+                  toast(String(e), "err");
+                }
+              })();
+            }}
+            onRevealSecret={(sec) => {
+              void (async () => {
+                try {
+                  if (!isVaultUnlocked()) {
+                    const ok = await unlockVault();
+                    if (!ok) throw new Error("vault locked");
+                    setVaultUnlocked(true);
+                  }
+                  const value = revealSecretValue(sec);
+                  setRevealedSecrets((prev) => ({
+                    ...prev,
+                    [sec.id]: value,
+                  }));
+                } catch (e) {
+                  toast(String(e), "err");
+                }
+              })();
+            }}
+            onCopySecret={(secretId) => {
+              const value = revealedSecrets[secretId];
+              if (value) void writeText(value);
+              toast("Copied", "ok");
+            }}
+            onDeleteSecret={(sec) => {
+              const { secrets: next, pending } = deleteLocalSecret(sec.id);
+              setSecrets(next);
+              setRevealedSecrets((prev) => {
+                const n = { ...prev };
+                delete n[sec.id];
+                return n;
+              });
+              const del = pending.find(
+                (p) => p.op === "delete" && p.id === sec.id,
+              );
+              const s = sessionRef.current;
+              if (s && live && del && del.op === "delete") {
+                void s
+                  .sendSecretDelete({
+                    id: del.id,
+                    updatedAt: del.updatedAt,
+                  })
+                  .then(() =>
+                    clearPendingSecretOps(
+                      pending.filter(
+                        (p) => !(p.op === "delete" && p.id === sec.id),
+                      ),
+                    ),
+                  )
+                  .catch((e) => log(`secret delete queued: ${String(e)}`));
+              }
+            }}
+          />
         ) : null}
 
         {tab === "commands" ? (

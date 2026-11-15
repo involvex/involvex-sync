@@ -17,6 +17,11 @@ export type MobileAppSettings = {
   autoClipboardSync: boolean;
   /** Include images in auto clipboard sync. */
   autoClipboardImages: boolean;
+  /**
+   * Opt-in Shizuku UserService poll for background clipboard text.
+   * Only active when autoClipboardSync is also on.
+   */
+  shizukuClipboardEnabled: boolean;
   /** Appearance preference. Default system. */
   theme: ThemePreference;
   /** Google OAuth client ID (Android or Web) for Drive. */
@@ -33,6 +38,7 @@ export const defaultMobileAppSettings: MobileAppSettings = {
   allowRemoteTermux: false,
   autoClipboardSync: false,
   autoClipboardImages: true,
+  shizukuClipboardEnabled: false,
   theme: "system",
   /** Default Web OAuth client (also in app.json extra.oauth). */
   driveOAuthClientId:
@@ -79,6 +85,10 @@ export async function loadAppSettings(): Promise<MobileAppSettings> {
         typeof parsed.autoClipboardImages === "boolean"
           ? parsed.autoClipboardImages
           : defaults.autoClipboardImages,
+      shizukuClipboardEnabled:
+        typeof parsed.shizukuClipboardEnabled === "boolean"
+          ? parsed.shizukuClipboardEnabled
+          : defaults.shizukuClipboardEnabled,
       theme: parseTheme(parsed.theme),
       driveOAuthClientId:
         typeof parsed.driveOAuthClientId === "string" &&
@@ -124,6 +134,10 @@ export async function saveAppSettings(
       typeof patch.autoClipboardImages === "boolean"
         ? patch.autoClipboardImages
         : current.autoClipboardImages,
+    shizukuClipboardEnabled:
+      typeof patch.shizukuClipboardEnabled === "boolean"
+        ? patch.shizukuClipboardEnabled
+        : current.shizukuClipboardEnabled,
     theme: patch.theme !== undefined ? parseTheme(patch.theme) : current.theme,
     driveOAuthClientId:
       typeof patch.driveOAuthClientId === "string"

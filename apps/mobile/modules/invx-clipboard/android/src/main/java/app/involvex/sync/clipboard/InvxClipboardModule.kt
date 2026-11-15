@@ -100,5 +100,21 @@ class InvxClipboardModule : Module() {
     AsyncFunction("compressImage") { dataBase64: String, maxBytes: Int ->
       InvxClipboardBridge.compressJpegBase64(dataBase64, maxBytes)
     }
+
+    AsyncFunction("isShizukuEnabled") {
+      val context = appContext.reactContext ?: throw Exceptions.ReactContextLost()
+      InvxClipboardBridge.isShizukuEnabled(context)
+    }
+
+    AsyncFunction("setShizukuEnabled") { enabled: Boolean ->
+      val context = appContext.reactContext ?: throw Exceptions.ReactContextLost()
+      InvxClipboardBridge.setShizukuEnabled(context, enabled)
+      true
+    }
+
+    AsyncFunction("getShizukuStatus") {
+      val context = appContext.reactContext ?: throw Exceptions.ReactContextLost()
+      InvxClipboardBridge.shizukuStatus(context)
+    }
   }
 }

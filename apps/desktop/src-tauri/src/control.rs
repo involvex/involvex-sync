@@ -1,7 +1,8 @@
 //! Loopback HTTP control plane for the `isync` CLI (127.0.0.1 only).
 
 use crate::ws::WsHub;
-use serde::Serialize;
+use parking_lot::Mutex;
+use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter, Manager};
@@ -11,6 +12,31 @@ use tokio::net::{TcpListener, TcpStream};
 use crate::bootlog;
 
 pub const CONTROL_PORT: u16 = 17_392;
+
+#[derive(Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ControlSnapshot {
+    pub active_peer_id: Option<String>,
+    pub peers: Vec<ControlPeer>,
+    pub notes: Vec<ControlNote>,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ControlPeer {
+    pub device_id: String,
+    pub name: String,
+    pub connected: bool,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ControlNote {
+    pub id: String,
+    pub title: String,
+    pub body: String,
+    pub updated_at: i64,
+}
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -22,11 +48,18 @@ struct StatusBody {
     listening: bool,
     lan_port: u16,
     window_visible: bool,
+    active_peer_id: Option<String>,
+    peer_count: usize,
 }
 
-pub fn start(app: AppHandle, hub: Arc<WsHub>, ready: Arc<AtomicBool>) {
+pub fn start(
+    app: AppHandle,
+    hub: Arc<WsHub>,
+    ready: Arc<AtomicBool>,
+    snap: Arc<Mutex<ControlSnapshot>>,
+) {
     tauri::async_runtime::spawn(async move {
-        if let Err(err) = serve(app, hub, ready).await {
+        if let Err(err) = serve(app, hub, ready, snap).await {
             eprintln!("control server failed: {err}");
         }
     });
@@ -36,6 +69,7 @@ async fn serve(
     app: AppHandle,
     hub: Arc<WsHub>,
     ready: Arc<AtomicBool>,
+    snap: Arc<Mutex<ControlSnapshot>>,
 ) -> Result<(), String> {
     let listener = TcpListener::bind(("127.0.0.1", CONTROL_PORT))
         .await
@@ -55,8 +89,9 @@ async fn serve(
         let app = app.clone();
         let hub = hub.clone();
         let ready = ready.clone();
+        let snap = snap.clone();
         tauri::async_runtime::spawn(async move {
-            if let Err(e) = handle(stream, app, hub, ready).await {
+            if let Err(e) = handle(stream, app, hub, ready, snap).await {
                 eprintln!("control request: {e}");
             }
         });
@@ -68,6 +103,7 @@ async fn handle(
     app: AppHandle,
     hub: Arc<WsHub>,
     ready: Arc<AtomicBool>,
+    snap: Arc<Mutex<ControlSnapshot>>,
 ) -> Result<(), String> {
     let mut buf = vec![0u8; 64 * 1024];
     let n = stream
@@ -87,6 +123,7 @@ async fn handle(
                 .get_webview_window("main")
                 .and_then(|w| w.is_visible().ok())
                 .unwrap_or(false);
+            let snap_guard = snap.lock();
             let body = StatusBody {
                 ok: true,
                 control: true,
@@ -95,12 +132,118 @@ async fn handle(
                 listening: ws.listening,
                 lan_port: ws.port,
                 window_visible: visible,
+                active_peer_id: snap_guard.active_peer_id.clone(),
+                peer_count: snap_guard.peers.len(),
             };
             (
                 200,
                 "application/json",
                 serde_json::to_string(&body).unwrap_or_else(|_| "{}".into()),
             )
+        }
+        ("GET", "/v1/peers") => {
+            let peers = snap.lock().peers.clone();
+            (
+                200,
+                "application/json",
+                serde_json::to_string(&peers).unwrap_or_else(|_| "[]".into()),
+            )
+        }
+        ("POST", "/v1/peer") => {
+            let device_id = body.trim().to_string();
+            if device_id.is_empty() {
+                (
+                    400,
+                    "application/json",
+                    r#"{"ok":false,"error":"empty deviceId"}"#.into(),
+                )
+            } else {
+                let _ = app.emit("isync-peer", device_id);
+                (202, "application/json", r#"{"ok":true}"#.into())
+            }
+        }
+        ("GET", "/v1/notes") => {
+            let notes = snap.lock().notes.clone();
+            (
+                200,
+                "application/json",
+                serde_json::to_string(&notes).unwrap_or_else(|_| "[]".into()),
+            )
+        }
+        ("POST", "/v1/notes") => {
+            let payload = body.trim().to_string();
+            if payload.is_empty() {
+                (
+                    400,
+                    "application/json",
+                    r#"{"ok":false,"error":"empty notes payload"}"#.into(),
+                )
+            } else {
+                // Validate JSON shape lightly; frontend does the upsert.
+                match serde_json::from_str::<serde_json::Value>(&payload) {
+                    Ok(v) if v.get("title").and_then(|t| t.as_str()).is_some() => {
+                        let _ = app.emit("isync-notes", payload);
+                        (202, "application/json", r#"{"ok":true}"#.into())
+                    }
+                    _ => (
+                        400,
+                        "application/json",
+                        r#"{"ok":false,"error":"body must be JSON {title, body?}"}"#.into(),
+                    ),
+                }
+            }
+        }
+        ("POST", "/v1/file") => {
+            let path = body.trim().to_string();
+            if path.is_empty() {
+                (
+                    400,
+                    "application/json",
+                    r#"{"ok":false,"error":"empty path"}"#.into(),
+                )
+            } else {
+                let _ = app.emit("isync-file", path);
+                (202, "application/json", r#"{"ok":true}"#.into())
+            }
+        }
+        ("POST", "/v1/remote") => {
+            let payload = body.trim().to_string();
+            if payload.is_empty() {
+                (
+                    400,
+                    "application/json",
+                    r#"{"ok":false,"error":"empty remote payload"}"#.into(),
+                )
+            } else {
+                match serde_json::from_str::<serde_json::Value>(&payload) {
+                    Ok(v) => {
+                        let shell = v
+                            .get("shell")
+                            .and_then(|s| s.as_str())
+                            .unwrap_or("");
+                        let command = v
+                            .get("command")
+                            .and_then(|c| c.as_str())
+                            .unwrap_or("");
+                        if (shell == "termux" || shell == "pwsh") && !command.is_empty()
+                        {
+                            let _ = app.emit("isync-remote", payload);
+                            (202, "application/json", r#"{"ok":true}"#.into())
+                        } else {
+                            (
+                                400,
+                                "application/json",
+                                r#"{"ok":false,"error":"body must be JSON {shell:\"termux\"|\"pwsh\", command}"}"#.into(),
+                            )
+                        }
+                    }
+                    Err(_) => (
+                        400,
+                        "application/json",
+                        r#"{"ok":false,"error":"body must be JSON {shell, command}"}"#.into(),
+                    ),
+                }
+            }
         }
         ("POST", "/v1/show") | ("POST", "/show") => {
             if let Some(window) = app.get_webview_window("main") {

@@ -525,6 +525,125 @@ describe("SyncSession peer routing", () => {
     session.addPeer(peer(b, "Laptop"), true);
     expect(session.activeDeviceId).toBe(b.deviceId);
   });
+
+  test("notes/secrets/vault fan out to every connected peer", async () => {
+    const { session, desk } = harness();
+    const a = generateDeviceKeys();
+    const b = generateDeviceKeys();
+    session.setPeers([peer(a, "Phone"), peer(b, "Laptop")]);
+    session.setActivePeer(a.deviceId);
+
+    for (const [keys, connId] of [
+      [a, 3],
+      [b, 4],
+    ] as const) {
+      await session.handleIncomingRaw(
+        serializeFrame(
+          encryptFrame(
+            {
+              v: 1,
+              id: `ping-${connId}`,
+              from: keys.deviceId,
+              ts: Date.now(),
+              payload: { type: "ping" },
+            },
+            keys,
+            peerKeys(desk),
+          ),
+        ),
+        connId,
+      );
+    }
+
+    await session.sendNoteUpsert({
+      id: "n1",
+      title: "t",
+      body: "b",
+      updatedAt: 1,
+    });
+    expect(sent).toHaveLength(2);
+    expect(sent.map((s) => s.connId).sort()).toEqual([3, 4]);
+
+    for (const entry of sent) {
+      const frame = parseFrame(entry.message);
+      expect(frame).not.toBeNull();
+      if (!frame) continue;
+      const target = entry.connId === 3 ? a : b;
+      const other = entry.connId === 3 ? b : a;
+      const opened = decryptFrame(frame, target, peerKeys(desk));
+      expect(opened).toMatchObject({
+        ok: true,
+        body: {
+          to: target.deviceId,
+          payload: { type: "note_upsert", id: "n1" },
+        },
+      });
+      // Wrong peer cannot open the other's sealed copy.
+      expect(decryptFrame(frame, other, peerKeys(desk)).ok).toBe(false);
+    }
+
+    sent.length = 0;
+    await session.sendVaultKeyShare("a".repeat(64));
+    expect(sent).toHaveLength(2);
+    expect(sent.map((s) => s.connId).sort()).toEqual([3, 4]);
+
+    sent.length = 0;
+    await session.sendSecretUpsert({
+      id: "s1",
+      updatedAt: 2,
+      ciphertext: "c",
+      nonce: "n",
+      meta: { label: "x", kind: "password" },
+    });
+    expect(sent).toHaveLength(2);
+
+    sent.length = 0;
+    await session.sendNoteDelete({ id: "n1", updatedAt: 3 });
+    await session.sendSecretDelete({ id: "s1", updatedAt: 4 });
+    expect(sent).toHaveLength(4);
+  });
+
+  test("shared fan-out skips offline peers and still reaches live ones", async () => {
+    const { session, desk } = harness();
+    const a = generateDeviceKeys();
+    const b = generateDeviceKeys();
+    session.setPeers([peer(a, "Phone"), peer(b, "Laptop")]);
+    session.setActivePeer(a.deviceId);
+    // Only A has a live socket mapping.
+    await session.handleIncomingRaw(
+      serializeFrame(
+        encryptFrame(
+          {
+            v: 1,
+            id: "a1",
+            from: a.deviceId,
+            ts: Date.now(),
+            payload: { type: "ping" },
+          },
+          a,
+          peerKeys(desk),
+        ),
+      ),
+      9,
+    );
+
+    await session.sendNoteUpsert({
+      id: "n2",
+      title: "only a",
+      body: "x",
+      updatedAt: 1,
+    });
+    expect(sent).toHaveLength(1);
+    expect(sent[0].connId).toBe(9);
+    const frame = parseFrame(sent[0].message);
+    expect(frame).not.toBeNull();
+    if (!frame) return;
+    const opened = decryptFrame(frame, a, peerKeys(desk));
+    expect(opened).toMatchObject({
+      ok: true,
+      body: { to: a.deviceId, payload: { type: "note_upsert" } },
+    });
+  });
 });
 
 describe("wire frame envelope", () => {

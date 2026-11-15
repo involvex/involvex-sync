@@ -4,6 +4,10 @@ import {
   setA11yReceiveEnabled,
 } from "../../modules/invx-a11y/src";
 import {
+  getClipboardShizukuStatus,
+  type ClipboardShizukuStatus,
+} from "../../modules/invx-clipboard/src";
+import {
   openImeSettings,
   setImeReceiveEnabled,
 } from "../../modules/invx-ime/src";
@@ -12,6 +16,7 @@ import {
   openNotifyListenerSettings,
   setNotifyMirrorEnabled,
 } from "../../modules/invx-notify/src";
+import { useEffect, useState } from "react";
 import { Pressable, Switch, Text, TextInput, View } from "react-native";
 import {
   KeyboardScreen,
@@ -23,10 +28,29 @@ import type { ThemePreference } from "../theme";
 import { useTheme } from "../themeContext";
 import { makeStyles } from "../ui/styles";
 
+function shizukuStatusLabel(status: ClipboardShizukuStatus): string {
+  switch (status.status) {
+    case "listening":
+      return "Listening (background text)";
+    case "authorized":
+      return "Authorized — connecting…";
+    case "unauthorized":
+      return "Waiting for Shizuku permission";
+    case "need_reboot":
+      return "Re-authorize Shizuku after reboot";
+    default:
+      return "Shizuku not available";
+  }
+}
+
 const THEME_OPTIONS: { id: ThemePreference; label: string }[] = [
   { id: "system", label: "System" },
   { id: "light", label: "Light" },
   { id: "dark", label: "Dark" },
+  { id: "amoled", label: "AMOLED" },
+  { id: "hacker", label: "Hacker" },
+  { id: "monokai", label: "Monokai" },
+  { id: "github", label: "GitHub" },
 ];
 
 export function SettingsScreen() {
@@ -63,17 +87,39 @@ export function SettingsScreen() {
     testTermux,
   } = useSession();
 
+  const [shizukuStatus, setShizukuStatus] = useState<ClipboardShizukuStatus>({
+    status: "unavailable",
+    available: false,
+    authorized: false,
+    listening: false,
+  });
+
+  useEffect(() => {
+    let cancelled = false;
+    const refresh = () => {
+      void getClipboardShizukuStatus().then((next) => {
+        if (!cancelled) setShizukuStatus(next);
+      });
+    };
+    refresh();
+    const id = setInterval(refresh, 3000);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
+  }, [appSettings.shizukuClipboardEnabled, appSettings.autoClipboardSync]);
+
   return (
     <KeyboardScreen contentContainerStyle={styles.content}>
       <View style={styles.card}>
-        <Text style={styles.h2}>Theme</Text>
-        <Text style={styles.muted}>Appearance for this app.</Text>
-        <View style={styles.segment}>
+        <Text style={styles.h2}>Appearance</Text>
+        <Text style={styles.muted}>Theme for this app.</Text>
+        <View style={styles.themeChips}>
           {THEME_OPTIONS.map((opt) => (
             <Pressable
               key={opt.id}
               style={[
-                styles.segmentItem,
+                styles.themeChip,
                 preference === opt.id && styles.segmentOn,
               ]}
               onPress={() => void setPreference(opt.id)}
@@ -92,102 +138,7 @@ export function SettingsScreen() {
       </View>
 
       <View style={styles.card}>
-        <Text style={styles.h2}>Google Drive</Text>
-        <Text style={styles.muted}>
-          Use the Web OAuth client. Redirect + token Worker (awesome-github-app
-          pattern):
-        </Text>
-        <Text style={styles.mono} selectable>
-          https://involvex-sync-oauth.involvex.workers.dev/oauth
-        </Text>
-        <Text style={styles.muted}>
-          Do not add involvex-sync:// on the Web client. Optional override of
-          app.json client ID:
-        </Text>
-        <TextInput
-          style={styles.input}
-          placeholder="Web OAuth client ID (optional override)"
-          placeholderTextColor={colors.placeholder}
-          value={appSettings.driveOAuthClientId}
-          autoCapitalize="none"
-          autoCorrect={false}
-          onChangeText={(text) => {
-            void saveAppSettings({ driveOAuthClientId: text }).then(
-              setAppSettings,
-            );
-          }}
-          onFocus={scrollOnFocus}
-        />
-        <TextInput
-          style={styles.input}
-          placeholder="Drive folder ID (optional)"
-          placeholderTextColor={colors.placeholder}
-          value={appSettings.driveFolderId}
-          autoCapitalize="none"
-          autoCorrect={false}
-          onChangeText={(text) => {
-            void saveAppSettings({ driveFolderId: text }).then(setAppSettings);
-          }}
-          onFocus={scrollOnFocus}
-        />
-        <View style={styles.settingRow}>
-          <View style={styles.settingCopy}>
-            <Text style={styles.body}>Drive upload shortcut</Text>
-            <Text style={styles.muted}>
-              Show Drive actions as preferred on Files tab
-            </Text>
-          </View>
-          <Switch
-            value={appSettings.driveUploadEnabled}
-            onValueChange={(next) => {
-              void saveAppSettings({ driveUploadEnabled: next }).then(
-                setAppSettings,
-              );
-              log(next ? "drive upload on" : "drive upload off");
-            }}
-            trackColor={{
-              false: colors.switchTrackOff,
-              true: colors.switchTrackOn,
-            }}
-            thumbColor={colors.switchThumb}
-          />
-        </View>
-      </View>
-
-      <View style={styles.card}>
-        <Text style={styles.h2}>Features</Text>
-        <View style={styles.settingRow}>
-          <View style={styles.settingCopy}>
-            <Text style={styles.body}>Allow remote Termux</Text>
-            <Text style={styles.muted}>
-              Let the PC run bash via InVx Termux
-            </Text>
-          </View>
-          <Switch
-            value={appSettings.allowRemoteTermux}
-            onValueChange={(next) => {
-              void saveAppSettings({ allowRemoteTermux: next }).then(
-                setAppSettings,
-              );
-              log(next ? "remote termux on" : "remote termux off");
-            }}
-            trackColor={{
-              false: colors.switchTrackOff,
-              true: colors.switchTrackOn,
-            }}
-            thumbColor={colors.switchThumb}
-          />
-        </View>
-        <Text style={styles.muted}>
-          Required in Termux: set allow-external-apps=true in
-          ~/.termux/termux.properties, then restart Termux. For termux-toast /
-          termux-open-url run: pkg install termux-api. Test Termux should show
-          real stdout/exit — not just “started”.
-        </Text>
-        <Pressable style={styles.linkBtn} onPress={() => void testTermux()}>
-          <Text style={styles.linkText}>Test Termux RUN_COMMAND</Text>
-        </Pressable>
-        <View style={styles.divider} />
+        <Text style={styles.h2}>Clipboard</Text>
         <View style={styles.settingRow}>
           <View style={styles.settingCopy}>
             <Text style={styles.body}>Auto sync clipboard</Text>
@@ -234,7 +185,15 @@ export function SettingsScreen() {
             thumbColor={colors.switchThumb}
           />
         </View>
-        <View style={styles.divider} />
+        <Text style={styles.muted}>
+          Android 10+ blocks background clipboard reads. Use Share → involvex
+          Sync, keep the app foreground, Sync Keyboard IME, or Shizuku (below)
+          when available.
+        </Text>
+      </View>
+
+      <View style={styles.card}>
+        <Text style={styles.h2}>Keyboard</Text>
         <View style={styles.settingRow}>
           <View style={styles.settingCopy}>
             <Text style={styles.body}>Sync Keyboard</Text>
@@ -327,7 +286,10 @@ export function SettingsScreen() {
               : "Open Accessibility settings"}
           </Text>
         </Pressable>
-        <View style={styles.divider} />
+      </View>
+
+      <View style={styles.card}>
+        <Text style={styles.h2}>Notifications</Text>
         <View style={styles.settingRow}>
           <View style={styles.settingCopy}>
             <Text style={styles.body}>Notification mirror</Text>
@@ -377,7 +339,42 @@ export function SettingsScreen() {
       </View>
 
       <View style={styles.card}>
-        <Text style={styles.h2}>Run on PC (PowerShell)</Text>
+        <Text style={styles.h2}>Remote · Termux</Text>
+        <View style={styles.settingRow}>
+          <View style={styles.settingCopy}>
+            <Text style={styles.body}>Allow remote Termux</Text>
+            <Text style={styles.muted}>
+              Let the PC run bash via InVx Termux
+            </Text>
+          </View>
+          <Switch
+            value={appSettings.allowRemoteTermux}
+            onValueChange={(next) => {
+              void saveAppSettings({ allowRemoteTermux: next }).then(
+                setAppSettings,
+              );
+              log(next ? "remote termux on" : "remote termux off");
+            }}
+            trackColor={{
+              false: colors.switchTrackOff,
+              true: colors.switchTrackOn,
+            }}
+            thumbColor={colors.switchThumb}
+          />
+        </View>
+        <Text style={styles.muted}>
+          Required in Termux: set allow-external-apps=true in
+          ~/.termux/termux.properties, then restart Termux. For termux-toast /
+          termux-open-url run: pkg install termux-api. Test Termux should show
+          real stdout/exit — not just “started”.
+        </Text>
+        <Pressable style={styles.linkBtn} onPress={() => void testTermux()}>
+          <Text style={styles.linkText}>Test Termux RUN_COMMAND</Text>
+        </Pressable>
+      </View>
+
+      <View style={styles.card}>
+        <Text style={styles.h2}>Remote · PC</Text>
         <Text style={styles.muted}>
           PC must enable “Allow remote PowerShell”.
         </Text>
@@ -408,13 +405,108 @@ export function SettingsScreen() {
       </View>
 
       <View style={styles.card}>
-        <Text style={styles.h2}>Background clipboard</Text>
+        <Text style={styles.h2}>Google Drive</Text>
         <Text style={styles.muted}>
-          Android 10+ blocks background clipboard reads. Use Share → involvex
-          Sync, keep the app foreground, or enable Sync Keyboard IME. A future
-          Shizuku path (privileged binder as shell UID) is documented in
-          architecture.md — not built yet; OEM battery killers still apply after
-          reboot.
+          Use the Web OAuth client. Redirect + token Worker (awesome-github-app
+          pattern):
+        </Text>
+        <Text style={styles.mono} selectable>
+          https://involvex-sync-oauth.involvex.workers.dev/oauth
+        </Text>
+        <Text style={styles.muted}>
+          Do not add involvex-sync:// on the Web client. Optional override of
+          app.json client ID:
+        </Text>
+        <TextInput
+          style={styles.input}
+          placeholder="Web OAuth client ID (optional override)"
+          placeholderTextColor={colors.placeholder}
+          value={appSettings.driveOAuthClientId}
+          autoCapitalize="none"
+          autoCorrect={false}
+          onChangeText={(text) => {
+            void saveAppSettings({ driveOAuthClientId: text }).then(
+              setAppSettings,
+            );
+          }}
+          onFocus={scrollOnFocus}
+        />
+        <TextInput
+          style={styles.input}
+          placeholder="Drive folder ID (optional)"
+          placeholderTextColor={colors.placeholder}
+          value={appSettings.driveFolderId}
+          autoCapitalize="none"
+          autoCorrect={false}
+          onChangeText={(text) => {
+            void saveAppSettings({ driveFolderId: text }).then(setAppSettings);
+          }}
+          onFocus={scrollOnFocus}
+        />
+        <View style={styles.settingRow}>
+          <View style={styles.settingCopy}>
+            <Text style={styles.body}>Drive upload shortcut</Text>
+            <Text style={styles.muted}>
+              Show Drive actions as preferred on Files tab
+            </Text>
+          </View>
+          <Switch
+            value={appSettings.driveUploadEnabled}
+            onValueChange={(next) => {
+              void saveAppSettings({ driveUploadEnabled: next }).then(
+                setAppSettings,
+              );
+              log(next ? "drive upload on" : "drive upload off");
+            }}
+            trackColor={{
+              false: colors.switchTrackOff,
+              true: colors.switchTrackOn,
+            }}
+            thumbColor={colors.switchThumb}
+          />
+        </View>
+      </View>
+
+      <View style={styles.card}>
+        <Text style={styles.h2}>Notes & secrets</Text>
+        <Text style={styles.muted}>
+          Synced notes and the vault live on the Files tab. They fan out to
+          every connected host when Live.
+        </Text>
+      </View>
+
+      <View style={styles.card}>
+        <Text style={styles.h2}>Background clipboard (Shizuku)</Text>
+        <View style={styles.settingRow}>
+          <View style={styles.settingCopy}>
+            <Text style={styles.body}>Background clipboard (Shizuku)</Text>
+            <Text style={styles.muted}>
+              {shizukuStatusLabel(shizukuStatus)}
+            </Text>
+          </View>
+          <Switch
+            value={appSettings.shizukuClipboardEnabled}
+            disabled={!appSettings.autoClipboardSync}
+            onValueChange={(next) => {
+              void saveAppSettings({ shizukuClipboardEnabled: next }).then(
+                setAppSettings,
+              );
+              log(next ? "shizuku clipboard on" : "shizuku clipboard off");
+            }}
+            trackColor={{
+              false: colors.switchTrackOff,
+              true: colors.switchTrackOn,
+            }}
+            thumbColor={colors.switchThumb}
+          />
+        </View>
+        <Text style={styles.muted}>
+          Needs the Shizuku app authorized (re-auth after reboot). OEM battery
+          killers may still stop background work. Text-only via Shizuku; images
+          still need foreground / IME. Share / IME remain the defaults.
+          {!appSettings.autoClipboardSync
+            ? " Turn on Auto sync clipboard first."
+            : ""}
         </Text>
       </View>
 

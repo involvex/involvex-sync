@@ -26,9 +26,13 @@ Run `bun lint` and `bun check` before declaring any task done.
 
 ## Navigation & Routing
 
-- Use **Expo Router** for all navigation. Routes live in `src/app/` — every file there is a screen, `_layout.tsx` files define navigators. Keep non-route code (components, hooks, utils) outside `src/app/`.
-- Import `Link`, `router`, and `useLocalSearchParams` from `expo-router`.
-- Docs: https://docs.expo.dev/router/introduction.md
+- This app uses a **manual tab bar**, not Expo Router file routes. Entry is
+  [`App.tsx`](App.tsx) with [`src/components/TabBar.tsx`](src/components/TabBar.tsx)
+  and screens under [`src/screens/`](src/screens/) (`home`, `connection`,
+  `files`, `settings`). Keep non-screen code in `src/components`, `src/`, and
+  `modules/`.
+- Do not add `src/app/` Expo Router trees unless the project deliberately
+  migrates; Expo Router docs still apply if that migration happens later.
 
 ## Building with EAS
 
