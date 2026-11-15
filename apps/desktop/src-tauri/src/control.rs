@@ -153,6 +153,27 @@ async fn handle(
                 (202, "application/json", r#"{"ok":true}"#.into())
             }
         }
+        ("POST", "/v1/screenshot") | ("POST", "/screenshot") => {
+            let _ = app.emit("isync-screenshot", true);
+            (202, "application/json", r#"{"ok":true}"#.into())
+        }
+        ("POST", "/v1/mirror") | ("POST", "/mirror") => {
+            let action = body.trim().to_ascii_lowercase();
+            if action != "start" && action != "stop" {
+                (
+                    400,
+                    "application/json",
+                    r#"{"ok":false,"error":"body must be start or stop"}"#.into(),
+                )
+            } else {
+                let _ = app.emit("isync-mirror", action);
+                (202, "application/json", r#"{"ok":true}"#.into())
+            }
+        }
+        ("POST", "/v1/escrcpy") | ("POST", "/escrcpy") => {
+            let _ = app.emit("isync-escrcpy", true);
+            (202, "application/json", r#"{"ok":true}"#.into())
+        }
         ("GET", "/v1/ready") => {
             let ready = ready.load(Ordering::Relaxed);
             (

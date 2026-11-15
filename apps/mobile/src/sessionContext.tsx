@@ -229,6 +229,7 @@ export type SessionContextValue = {
   pickAndSendFile: () => Promise<void>;
   sendPendingFiles: () => Promise<void>;
   runPwshOnPc: () => void;
+  requestPcScreenshot: () => void;
   onPair: () => Promise<void>;
   openScanner: () => Promise<void>;
   onScanPayload: (data: string) => Promise<void>;
@@ -1271,6 +1272,21 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     }
   }
 
+  function requestPcScreenshot(): void {
+    const s = sessionRef.current;
+    if (!s?.isOpen) {
+      log("not connected");
+      return;
+    }
+    try {
+      s.sendAdbScreencapRequest();
+      setCmdOutput("Screenshot requested from PC…");
+      log("adb screencap → PC");
+    } catch (e) {
+      log(`screencap request: ${String(e)}`);
+    }
+  }
+
   async function applyDesktopPairing(raw: string): Promise<boolean> {
     const parsed = parsePairingQr(raw.trim());
     if (!parsed) {
@@ -1771,6 +1787,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     pickAndSendFile,
     sendPendingFiles,
     runPwshOnPc,
+    requestPcScreenshot,
     onPair,
     openScanner,
     onScanPayload,

@@ -72,6 +72,13 @@ export function ConnectionScreen() {
             </Pressable>
           ))}
         </View>
+        {mode === "relay" ? (
+          <Text style={styles.muted}>
+            Relay is for away-from-home text/clipboard/commands. Prefer LAN for
+            large files (≤100 MiB soft cap). Screen mirroring stays on USB/Wi‑Fi
+            ADB via the PC (scrcpy / Escrcpy) — not this tunnel.
+          </Text>
+        ) : null}
         {mode !== "relay" ? (
           <View style={styles.fieldGrid}>
             <View style={styles.fieldGrow}>

@@ -58,6 +58,19 @@ choice is stored in settings as `adbSerial`. Auto-detect picks the single
 connected device and falls back automatically when a saved serial disappears
 (mDNS/TLS serials rotate whenever the phone reconnects).
 
+**Mirror (local):** Commands → **Start Mirror** / **Stop Mirror** spawns
+`scrcpy` (or `escrcpy mirror`) for the selected serial; **Open in Escrcpy**
+launches the Escrcpy GUI with `--device-id=`. Paths are configurable under
+Settings (or `ESCRCPY_SCRCPY` / PATH). This is USB/Wi‑Fi ADB only — not the
+Sync relay.
+
+```bash
+bun run isync -- screenshot
+bun run isync -- mirror start
+bun run isync -- mirror stop
+bun run isync -- escrcpy open
+```
+
 Install a global shim (optional): `bun link --cwd apps/cli` then `isync status`.
 
 ### Pairing several devices
@@ -75,7 +88,8 @@ list — an old install's single pairing is picked up automatically on first run
   _Use_ picks the send target, _Connect_ opens one host, _Remove_ unpairs it.
   One socket per host, each with its own reconnect backoff.
 - **Relay:** when away, the relay carries every payload type (not just links),
-  falling back automatically when the LAN socket is unavailable.
+  falling back automatically when the LAN socket is unavailable. Prefer LAN
+  for large files; do not expect video/mirroring over the relay.
 
 Existing single-device setups keep working: the only pairing becomes the
 active peer.

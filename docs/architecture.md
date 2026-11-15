@@ -44,8 +44,11 @@
 - Not Microsoft Phone Link — same E2E stack as the rest of Sync.
 - **Future (not built):** true background phone→PC without IME could use
   **Shizuku** (privileged clipboard binder as shell UID) or an overlay
-  focus trick. Shizuku needs the Shizuku app authorized + restarted after
-  reboot; OEM battery killers still apply. Keep Share / IME as defaults.
+  focus trick. Design sketch: opt-in Settings toggle → bind Shizuku user
+  service → poll/`ContentObserver`-style clipboard callbacks as shell UID →
+  existing `sendClipboard` path. Shizuku needs the Shizuku app authorized +
+  restarted after reboot; OEM battery killers still apply. Keep Share / IME
+  as defaults until that ships.
 
 ## Android constraints
 
@@ -130,6 +133,15 @@ InVx Termux package: `com.involvex.termux_app`.
   `unauthorized`, `ambiguous`, `no-device`). A saved serial that vanished or
   went unauthorized falls through instead of failing. mDNS/TLS serials are
   treated as hints, never identities.
+- **Local mirror (scrcpy / Escrcpy):** Commands tab can `start_scrcpy` /
+  `stop_scrcpy` (tracked child) or `open_escrcpy` (`--device-id=`). Paths
+  resolve Settings → `ESCRCPY_SCRCPY` / PATH → common Escrcpy install dirs;
+  if `scrcpy` is missing, `escrcpy mirror <serial>` is the fallback. Mirror
+  is **not** sent over the E2E WebSocket/relay — USB/Wi‑Fi ADB only. CLI:
+  `isync mirror start|stop`, `isync escrcpy open`, `isync screenshot`.
+- **Remote ADB screencap request:** phone may send `adb_screencap_request`;
+  desktop runs local screencap and replies with a clipboard image when
+  `allowRemoteAdbScreencap` is on.
 
 ## Multi-host pairing (full mesh)
 
@@ -175,6 +187,11 @@ supported topology. Each pairing is an independent, symmetric relationship.
 - **Relay fallback for everything:** `sendRaw` tries the LAN socket first and
   falls back to the relay for any payload type — clipboard, files, notes,
   keyboard, links and commands — not just share links.
+- **Relay limits:** the Durable Object is a small ciphertext mailbox (free-plan
+  hibernation, short offline queue). Prefer LAN for large chunked files
+  (soft cap 100 MiB) and clipboard images (≤2 MiB). Screen mirroring and
+  video never use the relay — use local scrcpy/Escrcpy. PC↔PC has no LAN dial
+  from the desktop listener; both sides join the same relay room.
 - **Firewall:** the inbound rule is `profile=any` (was private-only) because a
   laptop on public Wi-Fi or a phone hotspot is classified public. Pairing is
   still the gate, not the network profile.
