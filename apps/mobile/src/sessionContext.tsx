@@ -99,6 +99,18 @@ import {
   type MobileAppSettings,
 } from "./appSettings";
 import {
+  isSynced,
+  loadLedger,
+  markSynced,
+  type FolderSyncLedger,
+} from "./services/folderSyncLedger";
+import {
+  listWatchCandidates,
+  readWatchFile,
+  SizeStabilizer,
+  type WatchItem,
+} from "./services/folderSyncWatch";
+import {
   applyPeerNoteDelete,
   applyPeerNoteUpsert,
   clearPendingNoteOps,
@@ -229,6 +241,12 @@ export type SessionContextValue = {
   clearIncomingFolder: () => Promise<void>;
   pickAndSendFile: () => Promise<void>;
   sendPendingFiles: () => Promise<void>;
+  /** Phone→PC folder sync status for Files UI. */
+  folderSyncStatus: string;
+  pickFolderSyncFolder: () => Promise<void>;
+  clearFolderSyncFolder: () => Promise<void>;
+  setFolderSyncFromIncoming: () => Promise<void>;
+  scanFolderSyncNow: () => Promise<void>;
   runPwshOnPc: () => void;
   requestPcScreenshot: () => void;
   onPair: () => Promise<void>;
@@ -329,7 +347,14 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   const [notes, setNotes] = useState<SyncNote[]>([]);
   const [secrets, setSecrets] = useState<StoredSecret[]>([]);
   const [vaultUnlocked, setVaultUnlocked] = useState(false);
+  const [folderSyncStatus, setFolderSyncStatus] = useState("idle");
   const sessionRef = useRef<MobileSession | null>(null);
+  const folderSyncQueueRef = useRef<WatchItem[]>([]);
+  const folderSyncBusyRef = useRef(false);
+  const folderSyncLedgerRef = useRef<FolderSyncLedger>({});
+  const sizeStabilizerRef = useRef(new SizeStabilizer());
+  const appForegroundRef = useRef(true);
+  const connectedRef = useRef(false);
   /** Latest peer list without re-creating the session when it changes. */
   const peersRef = useRef<StoredPeer[]>([]);
   peersRef.current = peers;
@@ -1226,6 +1251,61 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     log("incoming folder cleared (app Documents fallback)");
   }
 
+  async function pickFolderSyncFolder(): Promise<void> {
+    try {
+      const permissions =
+        await FileSystem.StorageAccessFramework.requestDirectoryPermissionsAsync();
+      if (!permissions.granted || !permissions.directoryUri) {
+        log("folder sync pick cancelled");
+        return;
+      }
+      const next = await saveAppSettings({
+        folderSyncUri: permissions.directoryUri,
+        folderSyncLabel: labelFromSafUri(permissions.directoryUri),
+      });
+      setAppSettings(next);
+      log(
+        `folder sync watch → ${next.folderSyncLabel || next.folderSyncUri}`,
+      );
+    } catch (e) {
+      log(`folder sync pick failed: ${String(e)}`);
+    }
+  }
+
+  async function clearFolderSyncFolder(): Promise<void> {
+    const next = await saveAppSettings({
+      folderSyncUri: "",
+      folderSyncLabel: "",
+      folderSyncEnabled: false,
+    });
+    setAppSettings(next);
+    setFolderSyncStatus("idle");
+    log("folder sync watch cleared");
+  }
+
+  async function setFolderSyncFromIncoming(): Promise<void> {
+    const incoming = appSettingsRef.current.incomingFilesUri.trim();
+    if (!incoming) {
+      log("no save folder to use for folder sync");
+      return;
+    }
+    const next = await saveAppSettings({
+      folderSyncUri: incoming,
+      folderSyncLabel:
+        appSettingsRef.current.incomingFilesLabel ||
+        labelFromSafUri(incoming),
+    });
+    setAppSettings(next);
+    log(
+      `folder sync watch → ${next.folderSyncLabel || next.folderSyncUri} (save folder)`,
+    );
+  }
+
+  async function scanFolderSyncNow(): Promise<void> {
+    log("folder sync scan now");
+    await scanFolderSyncOnce();
+  }
+
   async function pickAndSendFile(): Promise<void> {
     const s = sessionRef.current;
     if (!s?.isOpen) {
@@ -1555,6 +1635,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     const sub = AppState.addEventListener("change", (state) => {
+      appForegroundRef.current = state === "active";
       if (state === "active") {
         void getSharedText().then((text) => {
           if (text) void handleSharedText(text);
@@ -1562,6 +1643,11 @@ export function SessionProvider({ children }: { children: ReactNode }) {
         void getSharedFiles().then((files) => {
           if (files.length) setPendingFiles(files);
         });
+      } else if (
+        appSettingsRef.current.folderSyncEnabled &&
+        folderSyncQueueRef.current.length === 0
+      ) {
+        setFolderSyncStatus("paused (background)");
       }
     });
     return () => sub.remove();
@@ -1579,10 +1665,141 @@ export function SessionProvider({ children }: { children: ReactNode }) {
 
   const connected =
     status.startsWith("connected") || status.includes("connected");
+  connectedRef.current = connected;
+
+  useEffect(() => {
+    void loadLedger().then((ledger) => {
+      folderSyncLedgerRef.current = ledger;
+    });
+  }, []);
 
   useEffect(() => {
     if (connected) void flushNotesAndSecrets();
   }, [connected, flushNotesAndSecrets]);
+
+  const enqueueFolderSync = useCallback(
+    (item: WatchItem) => {
+      const ledger = folderSyncLedgerRef.current;
+      if (isSynced(ledger, item.name, item.size, item.mtimeMs)) return;
+      const q = folderSyncQueueRef.current;
+      if (q.some((x) => x.uri === item.uri && x.size === item.size)) return;
+      if (q.length >= 40) {
+        log("folder sync queue full (40) — drop");
+        return;
+      }
+      q.push(item);
+      if (!connectedRef.current) {
+        setFolderSyncStatus(`queued ${q.length} (offline)`);
+      }
+    },
+    [log],
+  );
+
+  const drainFolderSyncQueue = useCallback(async () => {
+    if (folderSyncBusyRef.current) return;
+    const s = sessionRef.current;
+    if (!s?.isOpen) {
+      const n = folderSyncQueueRef.current.length;
+      if (n > 0) setFolderSyncStatus(`queued ${n} (offline)`);
+      return;
+    }
+    folderSyncBusyRef.current = true;
+    try {
+      while (folderSyncQueueRef.current.length > 0 && s.isOpen) {
+        const item = folderSyncQueueRef.current[0];
+        setFolderSyncStatus(`syncing ${item.name}…`);
+        try {
+          const file = await readWatchFile(item);
+          s.sendFile({
+            name: file.name,
+            mimeType: file.mimeType,
+            data: file.data,
+          });
+          folderSyncLedgerRef.current = await markSynced(
+            folderSyncLedgerRef.current,
+            item.name,
+            item.size,
+            item.mtimeMs,
+          );
+          log(`folder sync → PC: ${item.name} (${item.size} B)`);
+        } catch (e) {
+          log(`folder sync send failed: ${String(e)}`);
+        }
+        folderSyncQueueRef.current.shift();
+      }
+      const n = folderSyncQueueRef.current.length;
+      if (n > 0) {
+        setFolderSyncStatus(`queued ${n} (offline)`);
+      } else if (
+        appSettingsRef.current.folderSyncEnabled &&
+        appSettingsRef.current.folderSyncUri.trim()
+      ) {
+        setFolderSyncStatus(
+          appForegroundRef.current ? "watching" : "paused (background)",
+        );
+      } else {
+        setFolderSyncStatus("idle");
+      }
+    } finally {
+      folderSyncBusyRef.current = false;
+    }
+  }, [log]);
+
+  const scanFolderSyncOnce = useCallback(async () => {
+    const uri = appSettingsRef.current.folderSyncUri.trim();
+    if (!uri) {
+      setFolderSyncStatus("idle — pick a watch folder");
+      return;
+    }
+    try {
+      const items = await listWatchCandidates(uri);
+      const active = new Set(items.map((i) => i.uri));
+      sizeStabilizerRef.current.prune(active);
+      for (const item of items) {
+        if (!sizeStabilizerRef.current.observe(item)) continue;
+        enqueueFolderSync(item);
+      }
+      await drainFolderSyncQueue();
+    } catch (e) {
+      log(`folder sync scan: ${String(e)}`);
+      setFolderSyncStatus(`error: ${String(e)}`);
+    }
+  }, [drainFolderSyncQueue, enqueueFolderSync, log]);
+
+  useEffect(() => {
+    if (connected) void drainFolderSyncQueue();
+  }, [connected, drainFolderSyncQueue]);
+
+  useEffect(() => {
+    const enabled = appSettings.folderSyncEnabled;
+    const uri = appSettings.folderSyncUri.trim();
+    if (!enabled || !uri) {
+      setFolderSyncStatus("idle");
+      return;
+    }
+    if (!connected) {
+      const n = folderSyncQueueRef.current.length;
+      setFolderSyncStatus(n > 0 ? `queued ${n} (offline)` : "waiting for Live");
+      return;
+    }
+    if (!appForegroundRef.current) {
+      setFolderSyncStatus("paused (background)");
+      return;
+    }
+    setFolderSyncStatus("watching");
+    void scanFolderSyncOnce();
+    const id = setInterval(() => {
+      if (!appForegroundRef.current || !connectedRef.current) return;
+      if (!appSettingsRef.current.folderSyncEnabled) return;
+      void scanFolderSyncOnce();
+    }, 2000);
+    return () => clearInterval(id);
+  }, [
+    appSettings.folderSyncEnabled,
+    appSettings.folderSyncUri,
+    connected,
+    scanFolderSyncOnce,
+  ]);
 
   const saveNote = useCallback(
     async (input: { id?: string; title: string; body: string }) => {
@@ -1797,6 +2014,11 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     clearIncomingFolder,
     pickAndSendFile,
     sendPendingFiles,
+    folderSyncStatus,
+    pickFolderSyncFolder,
+    clearFolderSyncFolder,
+    setFolderSyncFromIncoming,
+    scanFolderSyncNow,
     runPwshOnPc,
     requestPcScreenshot,
     onPair,

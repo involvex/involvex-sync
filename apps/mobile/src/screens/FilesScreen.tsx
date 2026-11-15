@@ -39,6 +39,11 @@ export function FilesScreen() {
     pickAndSendFile,
     pendingFiles,
     sendPendingFiles,
+    folderSyncStatus,
+    pickFolderSyncFolder,
+    clearFolderSyncFolder,
+    setFolderSyncFromIncoming,
+    scanFolderSyncNow,
     notes,
     secrets,
     vaultUnlocked,
@@ -250,6 +255,77 @@ export function FilesScreen() {
         >
           <Text style={styles.btnText}>Send file to PC</Text>
         </Pressable>
+      </View>
+
+      <View style={styles.card}>
+        <Text style={styles.h2}>Folder sync → PC</Text>
+        <Text style={styles.muted}>
+          Opt-in: watch a folder while Sync is foreground and Live. Root files
+          only (no subfolders). Soft cap 100 MiB. PC saves into its incoming
+          folder.
+        </Text>
+        <View style={styles.settingRow}>
+          <View style={styles.settingCopy}>
+            <Text style={styles.body}>Enable folder sync</Text>
+            <Text style={styles.muted}>
+              {appSettings.folderSyncUri
+                ? `Watching ${appSettings.folderSyncLabel || "picked folder"}`
+                : "Pick a watch folder first"}
+            </Text>
+          </View>
+          <Switch
+            value={appSettings.folderSyncEnabled}
+            disabled={!appSettings.folderSyncUri.trim()}
+            onValueChange={(next) => {
+              void saveAppSettings({ folderSyncEnabled: next }).then(
+                setAppSettings,
+              );
+              log(next ? "folder sync on" : "folder sync off");
+            }}
+            trackColor={{
+              false: colors.switchTrackOff,
+              true: colors.switchTrackOn,
+            }}
+            thumbColor={colors.switchThumb}
+          />
+        </View>
+        <Pressable
+          style={styles.btn}
+          onPress={() => void pickFolderSyncFolder()}
+        >
+          <Text style={styles.btnText}>
+            {appSettings.folderSyncUri
+              ? "Change watch folder"
+              : "Pick watch folder"}
+          </Text>
+        </Pressable>
+        {appSettings.incomingFilesUri ? (
+          <Pressable
+            style={styles.linkBtn}
+            onPress={() => void setFolderSyncFromIncoming()}
+          >
+            <Text style={styles.linkText}>Use save folder as watch folder</Text>
+          </Pressable>
+        ) : null}
+        {appSettings.folderSyncUri ? (
+          <Pressable
+            style={styles.linkBtn}
+            onPress={() => void clearFolderSyncFolder()}
+          >
+            <Text style={styles.linkText}>Clear watch folder</Text>
+          </Pressable>
+        ) : null}
+        <Pressable
+          style={styles.btnGhost}
+          disabled={!appSettings.folderSyncUri.trim()}
+          onPress={() => void scanFolderSyncNow()}
+        >
+          <Text style={styles.btnText}>Scan now</Text>
+        </Pressable>
+        <Text style={styles.muted}>
+          Status: {folderSyncStatus}
+          {!connected ? " · not Live" : ""}
+        </Text>
       </View>
 
       <View style={styles.card}>

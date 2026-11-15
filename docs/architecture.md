@@ -104,6 +104,13 @@ InVx Termux package: `com.involvex.termux_app`.
   existing chunked transfer into the phone SAF save folder. Subpaths flatten
   (`sub/a.pdf` → `sub__a.pdf`). Ledger in localStorage avoids re-sends. Soft
   cap 100 MiB; offline queue flushes when Live again.
+- **Folder sync (phone → PC):** opt-in SAF watch folder on the phone (separate
+  from the incoming save folder; UI can copy the save folder URI). Polls every
+  2 s while the app is **foreground** and Live; root files only (no recursion).
+  Size must stay stable across two polls before enqueue. Mobile ledger
+  (`invx-folder-sync-ledger.json`) avoids re-sends. Soft cap 100 MiB; queue
+  flushes when Live again. Desktop receives via the normal incoming-files path.
+  No background sync when the process is killed (foreground service is later).
 - **Folder sync (PC → Google Drive):** same watcher; opt-in second sink shells
   out to `gws drive +upload` (credentials from `gws auth login`). Separate
   Drive ledger in localStorage. Does not require the phone to be Live.

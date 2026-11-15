@@ -30,6 +30,12 @@ export type MobileAppSettings = {
   driveFolderId: string;
   /** When true, shared/picked files can also upload to Drive. */
   driveUploadEnabled: boolean;
+  /** Opt-in phone→PC folder sync from a SAF watch folder. */
+  folderSyncEnabled: boolean;
+  /** SAF tree URI for the watch folder (content://…). */
+  folderSyncUri: string;
+  /** Friendly label for the watch folder. */
+  folderSyncLabel: string;
 };
 
 export const defaultMobileAppSettings: MobileAppSettings = {
@@ -45,13 +51,29 @@ export const defaultMobileAppSettings: MobileAppSettings = {
     "699308700646-ea3b97d997jn7g74h0jd296e75qkv7pa.apps.googleusercontent.com",
   driveFolderId: "",
   driveUploadEnabled: false,
+  folderSyncEnabled: false,
+  folderSyncUri: "",
+  folderSyncLabel: "",
 };
 
 const defaults = defaultMobileAppSettings;
 
+const THEME_PRESETS: readonly ThemePreference[] = [
+  "system",
+  "light",
+  "dark",
+  "amoled",
+  "hacker",
+  "monokai",
+  "github",
+];
+
 function parseTheme(value: unknown): ThemePreference {
-  if (value === "light" || value === "dark" || value === "system") {
-    return value;
+  if (
+    typeof value === "string" &&
+    (THEME_PRESETS as readonly string[]).includes(value)
+  ) {
+    return value as ThemePreference;
   }
   return defaults.theme;
 }
@@ -103,6 +125,18 @@ export async function loadAppSettings(): Promise<MobileAppSettings> {
         typeof parsed.driveUploadEnabled === "boolean"
           ? parsed.driveUploadEnabled
           : defaults.driveUploadEnabled,
+      folderSyncEnabled:
+        typeof parsed.folderSyncEnabled === "boolean"
+          ? parsed.folderSyncEnabled
+          : defaults.folderSyncEnabled,
+      folderSyncUri:
+        typeof parsed.folderSyncUri === "string"
+          ? parsed.folderSyncUri
+          : defaults.folderSyncUri,
+      folderSyncLabel:
+        typeof parsed.folderSyncLabel === "string"
+          ? parsed.folderSyncLabel
+          : defaults.folderSyncLabel,
     };
   } catch {
     return { ...defaults };
@@ -151,6 +185,18 @@ export async function saveAppSettings(
       typeof patch.driveUploadEnabled === "boolean"
         ? patch.driveUploadEnabled
         : current.driveUploadEnabled,
+    folderSyncEnabled:
+      typeof patch.folderSyncEnabled === "boolean"
+        ? patch.folderSyncEnabled
+        : current.folderSyncEnabled,
+    folderSyncUri:
+      typeof patch.folderSyncUri === "string"
+        ? patch.folderSyncUri.trim()
+        : current.folderSyncUri,
+    folderSyncLabel:
+      typeof patch.folderSyncLabel === "string"
+        ? patch.folderSyncLabel.trim()
+        : current.folderSyncLabel,
   };
   await SecureStore.setItemAsync(KEY, JSON.stringify(next));
   return next;
