@@ -1264,9 +1264,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
         folderSyncLabel: labelFromSafUri(permissions.directoryUri),
       });
       setAppSettings(next);
-      log(
-        `folder sync watch → ${next.folderSyncLabel || next.folderSyncUri}`,
-      );
+      log(`folder sync watch → ${next.folderSyncLabel || next.folderSyncUri}`);
     } catch (e) {
       log(`folder sync pick failed: ${String(e)}`);
     }
@@ -1292,8 +1290,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     const next = await saveAppSettings({
       folderSyncUri: incoming,
       folderSyncLabel:
-        appSettingsRef.current.incomingFilesLabel ||
-        labelFromSafUri(incoming),
+        appSettingsRef.current.incomingFilesLabel || labelFromSafUri(incoming),
     });
     setAppSettings(next);
     log(

@@ -1,8 +1,5 @@
 import * as FileSystem from "expo-file-system/legacy";
-import {
-  isSyncedEntry,
-  ledgerKey as makeLedgerKey,
-} from "./folderSyncHelpers";
+import { isSyncedEntry, ledgerKey as makeLedgerKey } from "./folderSyncHelpers";
 
 const FILE = `${FileSystem.documentDirectory ?? ""}invx-folder-sync-ledger.json`;
 
