@@ -247,6 +247,31 @@ describe("MobileSession multi-host sockets", () => {
     );
   });
 
+  test("socket open invokes onPeerOnline for that host", async () => {
+    const MobileSession = await loadSession();
+    const online: string[] = [];
+    const phone = generateDeviceKeys();
+    const session = new MobileSession(stored(phone, "Phone"), {
+      onShareUrl: () => {},
+      onClipboard: () => {},
+      onStatus: () => {},
+      onLog: () => {},
+      onPeerOnline: (deviceId) => {
+        online.push(deviceId);
+      },
+    });
+    const a = generateDeviceKeys();
+    const b = generateDeviceKeys();
+    session.setPeers(
+      [peer(a, "Desk", "192.168.1.10"), peer(b, "Laptop", "192.168.1.11")],
+      lanTransport,
+    );
+    session.connectAll();
+    await flush();
+
+    expect(online.sort()).toEqual([a.deviceId, b.deviceId].sort());
+  });
+
   test("decrypts by WireFrame.from, not by the active peer alone", async () => {
     const MobileSession = await loadSession();
     const clips: Array<{ text: string; from: string }> = [];

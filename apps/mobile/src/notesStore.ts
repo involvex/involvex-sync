@@ -55,6 +55,12 @@ export async function loadNotes(): Promise<SyncNote[]> {
   return sortNotes(data.notes);
 }
 
+/** All stored notes including soft-delete tombstones (for catch-up replay). */
+export async function loadNotesRaw(): Promise<SyncNote[]> {
+  const data = await readFile();
+  return data.notes;
+}
+
 export async function loadPendingNoteOps(): Promise<PendingNoteOp[]> {
   const data = await readFile();
   return data.pending;

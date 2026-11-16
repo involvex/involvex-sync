@@ -170,7 +170,10 @@ supported topology. Each pairing is an independent, symmetric relationship.
   device; notes, secrets and the vault key are shared state and go to every
   connected host (mobile loops open sockets; desktop `fanOutShared` seals a
   copy per paired peer and delivers via that peer’s LAN socket, with relay
-  fallback only for the active peer’s room).
+  fallback only for the active peer’s room). Shared notes, secrets, and the
+  vault key are also replayed to a host when that host becomes reachable
+  (desktop `onPeerOnline` after the device↔socket map is established; mobile
+  on host socket open; relay mailbox when LAN is down).
 - **Pairing replies:** pair requests are queued with the socket they arrived
   on, so `accept`/`reject` answer on the same connection.
 - **Desktop sockets:** one task per connection (`ws.rs`), keyed by conn id.

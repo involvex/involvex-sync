@@ -52,6 +52,11 @@ export function loadNotes(): SyncNote[] {
   return sortNotes(readFile().notes);
 }
 
+/** All stored notes including soft-delete tombstones (for catch-up replay). */
+export function loadNotesRaw(): SyncNote[] {
+  return readFile().notes;
+}
+
 export function loadPendingNoteOps(): PendingNoteOp[] {
   return readFile().pending;
 }

@@ -613,6 +613,102 @@ describe("SyncSession peer routing", () => {
     expect(sent).toHaveLength(4);
   });
 
+  test("onPeerOnline fires once when a paired device's socket is mapped", async () => {
+    const online: string[] = [];
+    const desk = generateDeviceKeys();
+    const session = new SyncSession(stored(desk, "Desk"), {
+      onShareUrl: () => {},
+      onClipboard: () => {},
+      onLog: () => {},
+      onPeerOnline: (deviceId) => {
+        online.push(deviceId);
+      },
+    });
+    const a = generateDeviceKeys();
+    session.setPeers([peer(a, "Phone")]);
+
+    const ping = (id: string, connId: number) =>
+      session.handleIncomingRaw(
+        serializeFrame(
+          encryptFrame(
+            {
+              v: 1,
+              id,
+              from: a.deviceId,
+              ts: Date.now(),
+              payload: pingPayload(),
+            },
+            a,
+            peerKeys(desk),
+          ),
+        ),
+        connId,
+      );
+
+    await ping("p1", 5);
+    expect(online).toEqual([a.deviceId]);
+
+    // Same socket again: no second fire.
+    await ping("p2", 5);
+    expect(online).toEqual([a.deviceId]);
+
+    // Remap to a new conn id: fires again.
+    await ping("p3", 9);
+    expect(online).toEqual([a.deviceId, a.deviceId]);
+  });
+
+  test("targeted note upsert reaches only the named conn id", async () => {
+    const { session, desk } = harness();
+    const a = generateDeviceKeys();
+    const b = generateDeviceKeys();
+    session.setPeers([peer(a, "Phone"), peer(b, "Laptop")]);
+    session.setActivePeer(a.deviceId);
+
+    for (const [keys, connId] of [
+      [a, 3],
+      [b, 4],
+    ] as const) {
+      await session.handleIncomingRaw(
+        serializeFrame(
+          encryptFrame(
+            {
+              v: 1,
+              id: `ping-${connId}`,
+              from: keys.deviceId,
+              ts: Date.now(),
+              payload: pingPayload(),
+            },
+            keys,
+            peerKeys(desk),
+          ),
+        ),
+        connId,
+      );
+    }
+
+    sent.length = 0;
+    await session.sendNoteUpsertTo(b.deviceId, {
+      id: "n-only-b",
+      title: "for b",
+      body: "x",
+      updatedAt: 1,
+    });
+    expect(sent).toHaveLength(1);
+    expect(sent[0].connId).toBe(4);
+    const frame = parseFrame(sent[0].message);
+    expect(frame).not.toBeNull();
+    if (!frame) return;
+    const opened = decryptFrame(frame, b, peerKeys(desk));
+    expect(opened).toMatchObject({
+      ok: true,
+      body: {
+        to: b.deviceId,
+        payload: { type: "note_upsert", id: "n-only-b" },
+      },
+    });
+    expect(decryptFrame(frame, a, peerKeys(desk)).ok).toBe(false);
+  });
+
   test("shared fan-out skips offline peers and still reaches live ones", async () => {
     const { session, desk } = harness();
     const a = generateDeviceKeys();
