@@ -6,8 +6,6 @@ import {
   upsertLocalNote,
 } from "./notesStore";
 
-const KEY = "invx.notes";
-
 /** Bun has no browser localStorage; give notesStore a Map-backed stub. */
 function installLocalStorage(): void {
   const store = new Map<string, string>();
