@@ -85,7 +85,9 @@ import {
   resolveTheme,
   saveSettings,
   type DesktopSettings,
+  type ThemePreference,
 } from "./services/settings";
+import { applyThemePalette } from "./services/themePalettes";
 import {
   describeAdbError,
   describeResolution,
@@ -106,6 +108,7 @@ import {
   clearPendingNoteOps,
   deleteLocalNote,
   loadNotes,
+  loadNotesRaw,
   loadPendingNoteOps,
   upsertLocalNote,
   type SyncNote,
@@ -121,7 +124,9 @@ import {
   isVaultUnlocked,
   loadPendingSecretOps,
   loadSecrets,
+  loadSecretsRaw,
   lockVault,
+  peekVaultKeyHex,
   queueVaultKeyShare,
   revealSecretValue,
   unlockVault,
@@ -310,6 +315,9 @@ export default function App() {
   const onAdbScreencapRequestRef = useRef<(requestId: string) => Promise<void>>(
     async () => {},
   );
+  const catchUpSharedToPeerRef = useRef<(deviceId: string) => Promise<void>>(
+    async () => {},
+  );
 
   const sessionRef = useRef<SyncSession | null>(null);
   const messageQueueRef = useRef<string[]>([]);
@@ -329,7 +337,7 @@ export default function App() {
         "(prefers-color-scheme: dark)",
       ).matches;
       const mode = resolveTheme(settings.theme, systemDark);
-      document.documentElement.dataset.theme = mode;
+      applyThemePalette(mode);
     };
     applyTheme();
     const mq = window.matchMedia("(prefers-color-scheme: dark)");
@@ -502,6 +510,9 @@ export default function App() {
       },
       onAdbScreencapRequest: (requestId) =>
         onAdbScreencapRequestRef.current(requestId),
+      onPeerOnline: (deviceId) => {
+        void catchUpSharedToPeerRef.current(deviceId);
+      },
       onNotificationMirror: async (note) => {
         if (!settingsRef.current.showPhoneNotifications) {
           log(`notif (ignored): ${note.title}`);
@@ -1046,6 +1057,104 @@ export default function App() {
     );
   }, [peers, activePeerId, notes, live, lan?.status.peerConnected, log]);
 
+  /**
+   * Replay the full notes/secrets/vault snapshot to one peer that just came
+   * online. Clears pending ops whose ids were included once that peer gets them.
+   */
+  const catchUpSharedToPeer = useCallback(
+    async (deviceId: string) => {
+      const s = sessionRef.current;
+      if (!s) return;
+      try {
+        const notesRaw = loadNotesRaw();
+        const secretsRaw = loadSecretsRaw();
+        const noteIds = new Set(notesRaw.map((n) => n.id));
+        const secretIds = new Set(secretsRaw.map((sec) => sec.id));
+
+        const vaultKey = await peekVaultKeyHex();
+        let vaultSent = false;
+        if (vaultKey) {
+          try {
+            await s.sendVaultKeyShareTo(deviceId, vaultKey);
+            vaultSent = true;
+          } catch (e) {
+            log(
+              `catch-up vault → ${deviceId}: ${e instanceof Error ? e.message : String(e)}`,
+            );
+          }
+        }
+
+        for (const note of notesRaw) {
+          try {
+            if (note.deleted) {
+              await s.sendNoteDeleteTo(deviceId, {
+                id: note.id,
+                updatedAt: note.updatedAt,
+              });
+            } else {
+              await s.sendNoteUpsertTo(deviceId, {
+                id: note.id,
+                title: note.title,
+                body: note.body,
+                updatedAt: note.updatedAt,
+              });
+            }
+          } catch (e) {
+            log(
+              `catch-up note ${note.id} → ${deviceId}: ${e instanceof Error ? e.message : String(e)}`,
+            );
+            noteIds.delete(note.id);
+          }
+        }
+
+        for (const sec of secretsRaw) {
+          try {
+            if (sec.deleted) {
+              await s.sendSecretDeleteTo(deviceId, {
+                id: sec.id,
+                updatedAt: sec.updatedAt,
+              });
+            } else {
+              await s.sendSecretUpsertTo(deviceId, {
+                id: sec.id,
+                updatedAt: sec.updatedAt,
+                ciphertext: sec.ciphertext,
+                nonce: sec.nonce,
+                meta: { label: sec.label, kind: sec.kind },
+              });
+            }
+          } catch (e) {
+            log(
+              `catch-up secret ${sec.id} → ${deviceId}: ${e instanceof Error ? e.message : String(e)}`,
+            );
+            secretIds.delete(sec.id);
+          }
+        }
+
+        clearPendingNoteOps(
+          loadPendingNoteOps().filter((op) => {
+            const id = op.op === "upsert" ? op.note.id : op.id;
+            return !noteIds.has(id);
+          }),
+        );
+        clearPendingSecretOps(
+          loadPendingSecretOps().filter((op) => {
+            if (op.op === "vault_key_share") return !vaultSent;
+            const id = op.op === "upsert" ? op.secret.id : op.id;
+            return !secretIds.has(id);
+          }),
+        );
+        if (notesRaw.length > 0 || secretsRaw.length > 0 || vaultKey) {
+          log(`catch-up shared state → ${deviceId}`);
+        }
+      } catch (e) {
+        log(`catch-up failed: ${String(e)}`);
+      }
+    },
+    [log],
+  );
+  catchUpSharedToPeerRef.current = catchUpSharedToPeer;
+
   const flushNotesAndSecrets = useCallback(async () => {
     const s = sessionRef.current;
     if (!s || !liveRef.current) return;
@@ -1092,6 +1201,16 @@ export default function App() {
   useEffect(() => {
     if (live) void flushNotesAndSecrets();
   }, [live, flushNotesAndSecrets]);
+
+  // Away-from-home: when the relay attaches and the active peer has no LAN
+  // socket, push the snapshot so the mailbox can deliver it later.
+  useEffect(() => {
+    if (relayStatus !== "relay connected") return;
+    const activeId = activePeerId;
+    if (!activeId) return;
+    if (sessionRef.current?.connIdFor(activeId) !== undefined) return;
+    void catchUpSharedToPeer(activeId);
+  }, [relayStatus, activePeerId, catchUpSharedToPeer]);
   const keyboardReady = settings.sendKeysToPhone && live && phoneKeyboardActive;
 
   const pushQueueBounded = (
@@ -3351,14 +3470,20 @@ export default function App() {
           <div className="panel-grid">
             <article className="card">
               <h2>Settings</h2>
-              <p className="muted small">Theme</p>
+              <p className="muted small">Appearance</p>
               <div className="theme-row">
                 {(
                   [
                     ["system", "System"],
                     ["light", "Light"],
                     ["dark", "Dark"],
-                  ] as const
+                    ["amoled", "AMOLED"],
+                    ["hacker", "Hacker"],
+                    ["monokai", "Monokai"],
+                    ["github", "GitHub"],
+                  ] as const satisfies ReadonlyArray<
+                    readonly [ThemePreference, string]
+                  >
                 ).map(([id, label]) => (
                   <button
                     key={id}

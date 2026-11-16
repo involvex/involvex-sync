@@ -136,6 +136,11 @@ export type SessionHandlers = {
     requestId: string,
     from: string,
   ) => void | Promise<void>;
+  /**
+   * Fired once when a paired device's socket is newly mapped (or remapped to a
+   * different conn id). Used to replay notes/secrets/vault catch-up.
+   */
+  onPeerOnline?: (deviceId: string) => void | Promise<void>;
   onLog: (line: string) => void;
 };
 
@@ -315,8 +320,13 @@ export class SyncSession {
       return;
     }
     // Remember which socket this device is on so replies go back to it.
+    // A new or remapped conn id means the peer just became reachable.
     if (connId !== undefined) {
+      const prev = this.connByDevice.get(frame.from);
       this.connByDevice.set(frame.from, connId);
+      if (prev !== connId) {
+        void this.handlers.onPeerOnline?.(frame.from);
+      }
     }
     // Optional target field: reject frames aimed at another device of ours.
     if (result.body.to && result.body.to !== this.local.deviceId) {
@@ -893,6 +903,23 @@ export class SyncSession {
     );
   }
 
+  /** Deliver one note upsert to a single paired peer (catch-up). */
+  async sendNoteUpsertTo(
+    peerId: string,
+    note: {
+      id: string;
+      title: string;
+      body: string;
+      updatedAt: number;
+    },
+  ): Promise<void> {
+    const peer = this.peerMap.get(peerId);
+    if (!peer) throw new Error(`host ${peerId} not paired`);
+    const body = noteUpsertBody(this.local.deviceId, note, peerId);
+    if (!body) throw new Error("invalid note");
+    await this.sendEncryptedTo(peerId, peer, body);
+  }
+
   async sendNoteDelete(note: { id: string; updatedAt: number }): Promise<void> {
     if (!noteDeleteBody(this.local.deviceId, note)) {
       throw new Error("invalid note delete");
@@ -900,6 +927,17 @@ export class SyncSession {
     await this.fanOutShared((peerId) =>
       noteDeleteBody(this.local.deviceId, note, peerId),
     );
+  }
+
+  async sendNoteDeleteTo(
+    peerId: string,
+    note: { id: string; updatedAt: number },
+  ): Promise<void> {
+    const peer = this.peerMap.get(peerId);
+    if (!peer) throw new Error(`host ${peerId} not paired`);
+    const body = noteDeleteBody(this.local.deviceId, note, peerId);
+    if (!body) throw new Error("invalid note delete");
+    await this.sendEncryptedTo(peerId, peer, body);
   }
 
   async sendSecretUpsert(secret: {
@@ -917,6 +955,23 @@ export class SyncSession {
     );
   }
 
+  async sendSecretUpsertTo(
+    peerId: string,
+    secret: {
+      id: string;
+      updatedAt: number;
+      ciphertext: string;
+      nonce: string;
+      meta: SecretUpsertPayload["meta"];
+    },
+  ): Promise<void> {
+    const peer = this.peerMap.get(peerId);
+    if (!peer) throw new Error(`host ${peerId} not paired`);
+    const body = secretUpsertBody(this.local.deviceId, secret, peerId);
+    if (!body) throw new Error("invalid secret");
+    await this.sendEncryptedTo(peerId, peer, body);
+  }
+
   async sendSecretDelete(secret: {
     id: string;
     updatedAt: number;
@@ -929,6 +984,17 @@ export class SyncSession {
     );
   }
 
+  async sendSecretDeleteTo(
+    peerId: string,
+    secret: { id: string; updatedAt: number },
+  ): Promise<void> {
+    const peer = this.peerMap.get(peerId);
+    if (!peer) throw new Error(`host ${peerId} not paired`);
+    const body = secretDeleteBody(this.local.deviceId, secret, peerId);
+    if (!body) throw new Error("invalid secret delete");
+    await this.sendEncryptedTo(peerId, peer, body);
+  }
+
   async sendVaultKeyShare(keyHex: string): Promise<void> {
     if (!vaultKeyShareBody(this.local.deviceId, keyHex)) {
       throw new Error("invalid vault key");
@@ -936,5 +1002,13 @@ export class SyncSession {
     await this.fanOutShared((peerId) =>
       vaultKeyShareBody(this.local.deviceId, keyHex, peerId),
     );
+  }
+
+  async sendVaultKeyShareTo(peerId: string, keyHex: string): Promise<void> {
+    const peer = this.peerMap.get(peerId);
+    if (!peer) throw new Error(`host ${peerId} not paired`);
+    const body = vaultKeyShareBody(this.local.deviceId, keyHex, peerId);
+    if (!body) throw new Error("invalid vault key");
+    await this.sendEncryptedTo(peerId, peer, body);
   }
 }

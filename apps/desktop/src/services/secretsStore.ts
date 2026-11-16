@@ -132,8 +132,18 @@ export function loadSecrets(): StoredSecret[] {
   return sortSecrets(readFile().secrets);
 }
 
+/** All stored secrets including soft-delete tombstones (for catch-up replay). */
+export function loadSecretsRaw(): StoredSecret[] {
+  return readFile().secrets;
+}
+
 export function loadPendingSecretOps(): PendingSecretOp[] {
   return readFile().pending;
+}
+
+/** Peek the vault key without unlocking the UI session (for catch-up share). */
+export async function peekVaultKeyHex(): Promise<string | null> {
+  return invoke<string | null>("load_vault_key");
 }
 
 export function newSecretId(): string {

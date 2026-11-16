@@ -178,9 +178,20 @@ export async function loadSecrets(): Promise<StoredSecret[]> {
   return sortSecrets(data.secrets);
 }
 
+/** All stored secrets including soft-delete tombstones (for catch-up replay). */
+export async function loadSecretsRaw(): Promise<StoredSecret[]> {
+  const data = await readFile();
+  return data.secrets;
+}
+
 export async function loadPendingSecretOps(): Promise<PendingSecretOp[]> {
   const data = await readFile();
   return data.pending;
+}
+
+/** Peek the vault key without unlocking the UI session (for catch-up share). */
+export async function peekVaultKeyHex(): Promise<string | null> {
+  return SecureStore.getItemAsync(VAULT_KEY);
 }
 
 export function newSecretId(): string {

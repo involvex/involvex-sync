@@ -137,6 +137,11 @@ export type SessionHandlers = {
     from: string,
   ) => void | Promise<void>;
   onVaultKeyShare?: (keyHex: string, from: string) => void | Promise<void>;
+  /**
+   * Fired when a paired host's WebSocket opens (after the identifying ping).
+   * Used to replay notes/secrets/vault catch-up to that host.
+   */
+  onPeerOnline?: (deviceId: string) => void | Promise<void>;
   onStatus: (status: string) => void;
   onLog: (line: string) => void;
 };
@@ -342,6 +347,7 @@ export class MobileSession {
       } catch {
         /* socket raced closed */
       }
+      void this.handlers.onPeerOnline?.(conn.peer.deviceId);
     };
     ws.onmessage = (event) => {
       const raw = typeof event.data === "string" ? event.data : "";
@@ -942,6 +948,21 @@ export class MobileSession {
     }
   }
 
+  /** Deliver one note upsert to a single paired host (catch-up). */
+  sendNoteUpsertTo(
+    peerId: string,
+    note: {
+      id: string;
+      title: string;
+      body: string;
+      updatedAt: number;
+    },
+  ): boolean {
+    const body = noteUpsertBody(this.local.deviceId, note, peerId);
+    if (!body) throw new Error("invalid note");
+    return this.sendFrameTo(peerId, body);
+  }
+
   sendNoteDelete(note: { id: string; updatedAt: number }): void {
     if (!noteDeleteBody(this.local.deviceId, note)) {
       throw new Error("invalid note delete");
@@ -952,6 +973,15 @@ export class MobileSession {
         noteDeleteBody(this.local.deviceId, note, id) as MessageBody,
       );
     }
+  }
+
+  sendNoteDeleteTo(
+    peerId: string,
+    note: { id: string; updatedAt: number },
+  ): boolean {
+    const body = noteDeleteBody(this.local.deviceId, note, peerId);
+    if (!body) throw new Error("invalid note delete");
+    return this.sendFrameTo(peerId, body);
   }
 
   sendSecretUpsert(secret: {
@@ -972,6 +1002,21 @@ export class MobileSession {
     }
   }
 
+  sendSecretUpsertTo(
+    peerId: string,
+    secret: {
+      id: string;
+      updatedAt: number;
+      ciphertext: string;
+      nonce: string;
+      meta: SecretUpsertPayload["meta"];
+    },
+  ): boolean {
+    const body = secretUpsertBody(this.local.deviceId, secret, peerId);
+    if (!body) throw new Error("invalid secret");
+    return this.sendFrameTo(peerId, body);
+  }
+
   sendSecretDelete(secret: { id: string; updatedAt: number }): void {
     if (!secretDeleteBody(this.local.deviceId, secret)) {
       throw new Error("invalid secret delete");
@@ -982,6 +1027,15 @@ export class MobileSession {
         secretDeleteBody(this.local.deviceId, secret, id) as MessageBody,
       );
     }
+  }
+
+  sendSecretDeleteTo(
+    peerId: string,
+    secret: { id: string; updatedAt: number },
+  ): boolean {
+    const body = secretDeleteBody(this.local.deviceId, secret, peerId);
+    if (!body) throw new Error("invalid secret delete");
+    return this.sendFrameTo(peerId, body);
   }
 
   /** The vault key is the root of the shared secret store — all hosts need it. */
@@ -995,5 +1049,11 @@ export class MobileSession {
       if (body && this.sendFrameTo(id, body)) sent += 1;
     }
     if (sent === 0) this.handlers.onLog("vault key share: no host connected");
+  }
+
+  sendVaultKeyShareTo(peerId: string, keyHex: string): boolean {
+    const body = vaultKeyShareBody(this.local.deviceId, keyHex, peerId);
+    if (!body) throw new Error("invalid vault key");
+    return this.sendFrameTo(peerId, body);
   }
 }

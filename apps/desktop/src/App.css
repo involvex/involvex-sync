@@ -543,12 +543,14 @@ details summary {
 
 .theme-row {
   display: flex;
+  flex-wrap: wrap;
   gap: 0.35rem;
   margin: 0.5rem 0 0.75rem;
 }
 
 .theme-row button {
-  flex: 1;
+  flex: 0 1 auto;
+  min-width: 4.5rem;
   background: var(--ghost);
   color: var(--text);
 }

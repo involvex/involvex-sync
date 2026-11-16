@@ -116,6 +116,7 @@ import {
   clearPendingNoteOps,
   deleteLocalNote,
   loadNotes,
+  loadNotesRaw,
   loadPendingNoteOps,
   upsertLocalNote,
   type SyncNote,
@@ -131,7 +132,9 @@ import {
   isVaultUnlocked,
   loadPendingSecretOps,
   loadSecrets,
+  loadSecretsRaw,
   lockVault,
+  peekVaultKeyHex,
   queueVaultKeyShare,
   revealSecretValue,
   unlockVault,
@@ -349,6 +352,9 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   const [vaultUnlocked, setVaultUnlocked] = useState(false);
   const [folderSyncStatus, setFolderSyncStatus] = useState("idle");
   const sessionRef = useRef<MobileSession | null>(null);
+  const catchUpSharedToPeerRef = useRef<(deviceId: string) => Promise<void>>(
+    async () => {},
+  );
   const folderSyncQueueRef = useRef<WatchItem[]>([]);
   const folderSyncBusyRef = useRef(false);
   const folderSyncLedgerRef = useRef<FolderSyncLedger>({});
@@ -854,6 +860,9 @@ export function SessionProvider({ children }: { children: ReactNode }) {
           log(`vault key share failed: ${String(e)}`);
         }
       },
+      onPeerOnline: (deviceId) => {
+        void catchUpSharedToPeerRef.current(deviceId);
+      },
       onPairAccept: async (accept) => {
         if (pairTimerRef.current) {
           clearTimeout(pairTimerRef.current);
@@ -943,6 +952,84 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     startFindPhone,
     pushKeyboardStatus,
   ]);
+
+  /**
+   * Replay the full notes/secrets/vault snapshot to one host that just
+   * opened its socket. Clears pending ops whose ids were delivered.
+   */
+  const catchUpSharedToPeer = useCallback(
+    async (deviceId: string) => {
+      const s = sessionRef.current;
+      if (!s) return;
+      try {
+        const notesRaw = await loadNotesRaw();
+        const secretsRaw = await loadSecretsRaw();
+        const noteIds = new Set(notesRaw.map((n) => n.id));
+        const secretIds = new Set(secretsRaw.map((sec) => sec.id));
+
+        const vaultKey = await peekVaultKeyHex();
+        let vaultSent = false;
+        if (vaultKey) {
+          if (s.sendVaultKeyShareTo(deviceId, vaultKey)) vaultSent = true;
+          else {
+            log(`catch-up vault → ${deviceId}: not connected`);
+          }
+        }
+
+        for (const note of notesRaw) {
+          const ok = note.deleted
+            ? s.sendNoteDeleteTo(deviceId, {
+                id: note.id,
+                updatedAt: note.updatedAt,
+              })
+            : s.sendNoteUpsertTo(deviceId, {
+                id: note.id,
+                title: note.title,
+                body: note.body,
+                updatedAt: note.updatedAt,
+              });
+          if (!ok) noteIds.delete(note.id);
+        }
+
+        for (const sec of secretsRaw) {
+          const ok = sec.deleted
+            ? s.sendSecretDeleteTo(deviceId, {
+                id: sec.id,
+                updatedAt: sec.updatedAt,
+              })
+            : s.sendSecretUpsertTo(deviceId, {
+                id: sec.id,
+                updatedAt: sec.updatedAt,
+                ciphertext: sec.ciphertext,
+                nonce: sec.nonce,
+                meta: { label: sec.label, kind: sec.kind },
+              });
+          if (!ok) secretIds.delete(sec.id);
+        }
+
+        await clearPendingNoteOps(
+          (await loadPendingNoteOps()).filter((op) => {
+            const id = op.op === "upsert" ? op.note.id : op.id;
+            return !noteIds.has(id);
+          }),
+        );
+        await clearPendingSecretOps(
+          (await loadPendingSecretOps()).filter((op) => {
+            if (op.op === "vault_key_share") return !vaultSent;
+            const id = op.op === "upsert" ? op.secret.id : op.id;
+            return !secretIds.has(id);
+          }),
+        );
+        if (notesRaw.length > 0 || secretsRaw.length > 0 || vaultKey) {
+          log(`catch-up shared state → ${deviceId}`);
+        }
+      } catch (e) {
+        log(`catch-up failed: ${String(e)}`);
+      }
+    },
+    [log],
+  );
+  catchUpSharedToPeerRef.current = catchUpSharedToPeer;
 
   const flushNotesAndSecrets = useCallback(async () => {
     const s = sessionRef.current;
