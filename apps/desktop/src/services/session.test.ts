@@ -3,6 +3,7 @@ import {
   decryptFrame,
   encryptFrame,
   generateDeviceKeys,
+  hashText,
   parseFrame,
   serializeFrame,
   type DeviceKeys,
@@ -77,12 +78,21 @@ function peer(keys: DeviceKeys, name: string): StoredPeer {
   };
 }
 
+function pingPayload(ts = Date.now()) {
+  return { type: "ping" as const, ts };
+}
+
+function clipPayload(text: string) {
+  return { type: "clipboard_update" as const, text, hash: hashText(text) };
+}
+
 /** Minimal capture of what the session was asked to do. */
 function harness() {
   const logs: string[] = [];
   const clips: Array<{ text: string; from: string }> = [];
   const desk = generateDeviceKeys();
   const session = new SyncSession(stored(desk, "Desk"), {
+    onShareUrl: () => {},
     onClipboard: (text, from) => {
       clips.push({ text, from });
     },
@@ -107,7 +117,7 @@ describe("SyncSession peer routing", () => {
             id: "a1",
             from: a.deviceId,
             ts: Date.now(),
-            payload: { type: "ping" },
+            payload: pingPayload(),
           },
           a,
           peerKeys(desk),
@@ -145,7 +155,7 @@ describe("SyncSession peer routing", () => {
             id: "a1",
             from: a.deviceId,
             ts: Date.now(),
-            payload: { type: "ping" },
+            payload: pingPayload(),
           },
           a,
           peerKeys(desk),
@@ -161,7 +171,7 @@ describe("SyncSession peer routing", () => {
             id: "b1",
             from: b.deviceId,
             ts: Date.now(),
-            payload: { type: "ping" },
+            payload: pingPayload(),
           },
           b,
           peerKeys(desk),
@@ -201,7 +211,7 @@ describe("SyncSession peer routing", () => {
         id: "abc",
         from: b.deviceId,
         ts: Date.now(),
-        payload: { type: "clipboard_update", text: "hi" },
+        payload: clipPayload("hi"),
       },
       b,
       peerKeys(desk),
@@ -239,7 +249,7 @@ describe("SyncSession peer routing", () => {
         id: "abc",
         from: a.deviceId,
         ts: Date.now(),
-        payload: { type: "clipboard_update", text: "hi" },
+        payload: clipPayload("hi"),
       },
       a,
       peerKeys(desk),
@@ -267,7 +277,7 @@ describe("SyncSession peer routing", () => {
         id: "abc",
         from: a.deviceId,
         ts: Date.now(),
-        payload: { type: "clipboard_update", text: "hi" },
+        payload: clipPayload("hi"),
       },
       a,
       peerKeys(desk),
@@ -299,7 +309,7 @@ describe("SyncSession peer routing", () => {
         id: "abc",
         from: a.deviceId,
         ts: Date.now(),
-        payload: { type: "ping" },
+        payload: pingPayload(),
       },
       a,
       peerKeys(desk),
@@ -342,7 +352,7 @@ describe("SyncSession peer routing", () => {
         id: "abc",
         from: b.deviceId,
         ts: Date.now(),
-        payload: { type: "clipboard_update", text: "hi" },
+        payload: clipPayload("hi"),
       },
       b,
       peerKeys(desk),
@@ -368,7 +378,7 @@ describe("SyncSession peer routing", () => {
         id: "abc",
         from: b.deviceId,
         ts: Date.now(),
-        payload: { type: "clipboard_update", text: "hi" },
+        payload: clipPayload("hi"),
       },
       b,
       peerKeys(desk),
@@ -392,7 +402,7 @@ describe("SyncSession peer routing", () => {
         id: "abc",
         from: a.deviceId,
         ts: Date.now(),
-        payload: { type: "clipboard_update", text: "hi" },
+        payload: clipPayload("hi"),
       },
       a,
       peerKeys(desk),
@@ -438,7 +448,7 @@ describe("SyncSession peer routing", () => {
         id: "abc",
         from: b.deviceId,
         ts: Date.now(),
-        payload: { type: "clipboard_update", text: "from laptop" },
+        payload: clipPayload("from laptop"),
       },
       b,
       peerKeys(desk),
@@ -460,7 +470,7 @@ describe("SyncSession peer routing", () => {
         // Not this desktop's id.
         to: "someone-else",
         ts: Date.now(),
-        payload: { type: "clipboard_update", text: "misfiled" },
+        payload: clipPayload("misfiled"),
       },
       a,
       peerKeys(desk),
@@ -484,7 +494,7 @@ describe("SyncSession peer routing", () => {
         id: "abc",
         from: stranger.deviceId,
         ts: Date.now(),
-        payload: { type: "clipboard_update", text: "who?" },
+        payload: clipPayload("who?"),
       },
       stranger,
       peerKeys(desk),
@@ -545,7 +555,7 @@ describe("SyncSession peer routing", () => {
               id: `ping-${connId}`,
               from: keys.deviceId,
               ts: Date.now(),
-              payload: { type: "ping" },
+              payload: pingPayload(),
             },
             keys,
             peerKeys(desk),
@@ -618,7 +628,7 @@ describe("SyncSession peer routing", () => {
             id: "a1",
             from: a.deviceId,
             ts: Date.now(),
-            payload: { type: "ping" },
+            payload: pingPayload(),
           },
           a,
           peerKeys(desk),
@@ -657,7 +667,7 @@ describe("wire frame envelope", () => {
         from: keys.deviceId,
         to: other.deviceId,
         ts: 1,
-        payload: { type: "ping" },
+        payload: pingPayload(),
       },
       keys,
       peerKeys(other),
