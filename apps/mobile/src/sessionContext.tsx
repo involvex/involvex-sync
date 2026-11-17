@@ -888,7 +888,16 @@ export function SessionProvider({ children }: { children: ReactNode }) {
           host: nextHost,
           port: nextPort,
         });
-        s.setPeers([...peersRef.current, next], (p) => ({
+        const transport = {
+          ...defaultTransport(nextHost),
+          mode: "lan" as const,
+          host: nextHost,
+          port: nextPort,
+        };
+        const withoutDup = peersRef.current.filter(
+          (p) => p.deviceId !== next.deviceId,
+        );
+        s.setPeers([...withoutDup, next], (p) => ({
           ...transport,
           host: p.host ?? nextHost,
           port: p.port ?? nextPort,
@@ -898,13 +907,6 @@ export function SessionProvider({ children }: { children: ReactNode }) {
         setPairingBusy(false);
         setPairingPhase("idle");
         log(`paired ${next.name} (${deviceFingerprint(accept.device)})`);
-        const transport = {
-          ...defaultTransport(nextHost),
-          mode: "lan" as const,
-          host: nextHost,
-          port: nextPort,
-        };
-        s.connect(transport);
         void startKeepalive("involvex Sync", `LAN ${transport.host}`);
         setStatus(`Paired and connected · ${next.name}`);
       },
@@ -1281,14 +1283,40 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       host: svc.host,
       port: svc.port,
     });
-    if (peer?.deviceId === svc.deviceId) {
-      log(`already paired with ${svc.name} — connecting`);
-      session.connect({
-        mode: "lan",
+    // Prefer deviceId; when mDNS TXT `id` is empty, fall back to host:port.
+    const known =
+      (svc.deviceId
+        ? peers.find((p) => p.deviceId === svc.deviceId)
+        : undefined) ??
+      peers.find(
+        (p) =>
+          p.host === svc.host &&
+          (p.port ?? DEFAULT_PORT) === (svc.port || DEFAULT_PORT),
+      );
+    if (known) {
+      log(`already paired with ${known.name} — connecting`);
+      const transport = {
+        ...defaultTransport(svc.host),
+        mode: "lan" as const,
         host: svc.host,
-        port: svc.port,
-        relayUrl: defaultTransport("").relayUrl,
-      });
+        port: svc.port || DEFAULT_PORT,
+      };
+      const refreshed: StoredPeer = {
+        ...known,
+        host: svc.host,
+        port: svc.port || DEFAULT_PORT,
+      };
+      session.setPeers(
+        peers.map((p) => (p.deviceId === known.deviceId ? refreshed : p)),
+        (p) => ({
+          ...transport,
+          host: p.host ?? svc.host,
+          port: p.port ?? (svc.port || DEFAULT_PORT),
+        }),
+      );
+      session.setActivePeer(known.deviceId);
+      setActivePeerId(known.deviceId);
+      session.connectPeer(known.deviceId);
       void startKeepalive("involvex Sync", `LAN ${svc.host}`);
       return;
     }

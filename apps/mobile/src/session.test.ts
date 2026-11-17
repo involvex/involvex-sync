@@ -28,6 +28,7 @@ type FakeSocket = {
   url: string;
   readyState: number;
   closed: boolean;
+  sent: string[];
   onopen: ((ev?: unknown) => void) | null;
   onclose: ((ev?: unknown) => void) | null;
   onerror: ((ev?: unknown) => void) | null;
@@ -48,6 +49,7 @@ function installFakeWebSocket(): void {
     url: string;
     readyState = FakeWebSocket.CONNECTING;
     closed = false;
+    sent: string[] = [];
     onopen: FakeSocket["onopen"] = null;
     onclose: FakeSocket["onclose"] = null;
     onerror: FakeSocket["onerror"] = null;
@@ -61,7 +63,9 @@ function installFakeWebSocket(): void {
         this.onopen?.({});
       });
     }
-    send(_data: string) {}
+    send(data: string) {
+      this.sent.push(data);
+    }
     close() {
       this.closed = true;
       this.readyState = FakeWebSocket.CLOSED;
@@ -312,5 +316,34 @@ describe("MobileSession multi-host sockets", () => {
     expect(decryptFrame(frame, phone, peerKeys(b))).toMatchObject({
       ok: true,
     });
+  });
+
+  test("connect({ pairing: true }) sends a pair request on open", async () => {
+    const MobileSession = await loadSession();
+    const logs: string[] = [];
+    const phone = generateDeviceKeys();
+    const session = new MobileSession(stored(phone, "Phone"), {
+      onShareUrl: () => {},
+      onClipboard: () => {},
+      onStatus: () => {},
+      onLog: (line) => logs.push(line),
+    });
+
+    session.connect(lanTransport({ host: "192.168.1.10" }), { pairing: true });
+    await flush();
+
+    expect(sockets).toHaveLength(1);
+    const ws = sockets[0];
+    if (!ws) throw new Error("expected pairing socket");
+    expect(ws.sent).toHaveLength(1);
+    const raw = ws.sent[0];
+    if (!raw) throw new Error("expected pair request payload");
+    const parsed = JSON.parse(raw) as {
+      kind?: string;
+      device?: { deviceId?: string };
+    };
+    expect(parsed.kind).toBe("involvex-sync-pair-request");
+    expect(parsed.device?.deviceId).toBe(phone.deviceId);
+    expect(logs).toContain("pair request sent");
   });
 });

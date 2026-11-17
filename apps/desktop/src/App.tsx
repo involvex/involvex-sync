@@ -320,6 +320,10 @@ export default function App() {
   );
 
   const sessionRef = useRef<SyncSession | null>(null);
+  const peersRef = useRef<StoredPeer[]>([]);
+  peersRef.current = peers;
+  const lanRef = useRef<LanInfo | null>(null);
+  lanRef.current = lan;
   const messageQueueRef = useRef<string[]>([]);
   const folderSyncLedgerRef = useRef<FolderSyncLedger>(loadLedger());
   const folderSyncQueueRef = useRef<FolderSyncReady[]>([]);
@@ -547,6 +551,46 @@ export default function App() {
         );
       },
       onPairRequest: (request) => {
+        const deviceId = request.device.deviceId;
+        const known = peersRef.current.find((p) => p.deviceId === deviceId);
+        if (known) {
+          // Reconnect: already paired — accept without a manual banner.
+          void (async () => {
+            const next: StoredPeer = {
+              deviceId,
+              name: request.device.name,
+              deviceType: request.device.type,
+              ed25519PublicKey: request.device.ed25519PublicKey,
+              x25519PublicKey: request.device.x25519PublicKey,
+            };
+            try {
+              await savePeer(next);
+              await sessionRef.current?.acceptPair(
+                request,
+                lanRef.current?.ip ?? undefined,
+                lanRef.current?.port || DEFAULT_PORT,
+              );
+              setPeers((prev) => {
+                const idx = prev.findIndex((p) => p.deviceId === deviceId);
+                return idx >= 0
+                  ? prev.map((p, i) => (i === idx ? { ...p, ...next } : p))
+                  : [...prev, next];
+              });
+              setActivePeerId(deviceId);
+              setPendingPair(null);
+              log(
+                `auto-accepted reconnect ${request.device.name} (${deviceFingerprint(request.device)})`,
+              );
+              toast(`Reconnected ${request.device.name}`, "ok");
+            } catch (e) {
+              log(`auto-accept failed: ${String(e)}`);
+              setPendingPair(request);
+              setTab("connection");
+              toast(`${request.device.name} wants to pair`, "info");
+            }
+          })();
+          return;
+        }
         setPendingPair(request);
         setTab("connection");
         void notifyPairRequest(request);

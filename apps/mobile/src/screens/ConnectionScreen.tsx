@@ -179,7 +179,12 @@ export function ConnectionScreen() {
           </Text>
         ) : (
           nearby.map((svc) => {
-            const isPaired = peer?.deviceId === svc.deviceId;
+            const isPaired = peers.some(
+              (p) =>
+                (svc.deviceId && p.deviceId === svc.deviceId) ||
+                (p.host === svc.host &&
+                  (p.port ?? DEFAULT_PORT) === (svc.port || DEFAULT_PORT)),
+            );
             return (
               <View
                 key={`${svc.deviceId}-${svc.host}`}
