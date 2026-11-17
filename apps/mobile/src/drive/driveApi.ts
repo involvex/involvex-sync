@@ -26,7 +26,9 @@ export async function listDriveFiles(
   // drive.file scope only sees files this app created/opened — not the whole
   // My Drive tree. Listing 'root' in parents often looks "empty"/dead.
   const parent = parentId?.trim();
-  const safeParent = parent ? parent.replace(/'/g, "\\'") : "";
+  const safeParent = parent
+    ? parent.replace(/\\/g, "\\\\").replace(/'/g, "\\'")
+    : "";
   const q = safeParent
     ? `'${safeParent}' in parents and trashed = false`
     : "trashed = false";
