@@ -247,7 +247,9 @@ export function queueVaultKeyShare(keyHex: string): void {
   const data = readFile();
   const pending = [
     ...data.pending.filter((p) => p.op !== "vault_key_share"),
-    { op: "vault_key_share" as const, keyHex },
+    // Do not persist raw vault key material in localStorage.
+    // Keep the operation marker, but redact the sensitive value at rest.
+    { op: "vault_key_share" as const, keyHex: "" },
   ];
   writeFile({ secrets: data.secrets, pending });
 }
