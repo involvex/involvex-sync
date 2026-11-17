@@ -243,7 +243,7 @@ export function revealSecretValue(secret: StoredSecret): string {
   return openVaultValue(secret.ciphertext, secret.nonce, keyHex);
 }
 
-export function queueVaultKeyShare(keyHex: string): void {
+export function queueVaultKeyShare(_keyHex: string): void {
   const data = readFile();
   const pending = [
     ...data.pending.filter((p) => p.op !== "vault_key_share"),
