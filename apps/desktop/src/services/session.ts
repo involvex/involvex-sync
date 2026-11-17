@@ -12,6 +12,8 @@ import {
   type SecretDeletePayload,
   type SecretUpsertPayload,
   FILE_CHUNK_BYTES,
+  MAX_CLIPBOARD_IMAGE_BYTES,
+  MAX_FILE_TRANSFER_BYTES,
   ChunkAssembler,
   assertClipboardImageSize,
   assertSendableSize,
@@ -55,6 +57,15 @@ import {
   type StoredPeer,
   toDeviceKeys,
 } from "./identity";
+
+/** Cap concurrent inbound chunked receives so stalled transfers cannot pin RAM. */
+const MAX_ASSEMBLERS = 3;
+const ASSEMBLER_IDLE_TTL_MS = 90_000;
+
+type AssemblerEntry = {
+  assembler: ChunkAssembler;
+  lastActivity: number;
+};
 
 export type RemoteCommandRequest = {
   requestId: string;
@@ -170,7 +181,7 @@ export class SyncSession {
     connId?: number;
   }> = [];
   private relaySend: ((raw: string) => void) | null = null;
-  private assemblers = new Map<string, ChunkAssembler>();
+  private assemblers = new Map<string, AssemblerEntry>();
 
   constructor(stored: StoredDeviceKeys, handlers: SessionHandlers) {
     this.local = toDeviceKeys(stored);
@@ -453,9 +464,36 @@ export class SyncSession {
         break;
       }
       case "file_transfer": {
+        const maxBytes =
+          payload.purpose === "clipboard"
+            ? MAX_CLIPBOARD_IMAGE_BYTES
+            : MAX_FILE_TRANSFER_BYTES;
+        if (typeof payload.size === "number" && payload.size > maxBytes) {
+          this.handlers.onLog(
+            `drop: file_transfer size ${payload.size} > ${maxBytes}`,
+          );
+          break;
+        }
+        // Base64 expands ~4/3; reject oversized wire payloads before decode.
+        if (payload.dataBase64.length > Math.ceil((maxBytes * 4) / 3) + 64) {
+          this.handlers.onLog("drop: file_transfer payload too large");
+          break;
+        }
+        let decoded: Uint8Array;
+        try {
+          decoded = fromBase64(payload.dataBase64);
+        } catch (e) {
+          this.handlers.onLog(`drop: file_transfer base64: ${String(e)}`);
+          break;
+        }
+        if (decoded.byteLength > maxBytes) {
+          this.handlers.onLog(
+            `drop: file_transfer decoded ${decoded.byteLength} > ${maxBytes}`,
+          );
+          break;
+        }
         if (payload.purpose === "clipboard") {
-          const hash =
-            payload.hash ?? hashBytes(fromBase64(payload.dataBase64));
+          const hash = payload.hash ?? hashBytes(decoded);
           this.loop.rememberHash(hash, body.from);
           await this.handlers.onClipboardImage?.(
             {
@@ -482,7 +520,22 @@ export class SyncSession {
       }
       case "file_offer": {
         try {
-          this.assemblers.set(payload.transferId, new ChunkAssembler(payload));
+          this.reapIdleAssemblers();
+          if (this.assemblers.has(payload.transferId)) {
+            this.assemblers.delete(payload.transferId);
+          }
+          while (this.assemblers.size >= MAX_ASSEMBLERS) {
+            const oldest = this.oldestAssemblerId();
+            if (!oldest) break;
+            this.handlers.onLog(
+              `file offer drop oldest transfer ${oldest} (cap ${MAX_ASSEMBLERS})`,
+            );
+            this.assemblers.delete(oldest);
+          }
+          this.assemblers.set(payload.transferId, {
+            assembler: new ChunkAssembler(payload),
+            lastActivity: Date.now(),
+          });
           this.handlers.onLog(
             `file offer ${payload.name} (${payload.size} B, ${payload.totalChunks} chunks${payload.purpose === "clipboard" ? ", clipboard" : ""})`,
           );
@@ -492,16 +545,18 @@ export class SyncSession {
         break;
       }
       case "file_chunk": {
-        const asm = this.assemblers.get(payload.transferId);
-        if (!asm) {
+        this.reapIdleAssemblers();
+        const entry = this.assemblers.get(payload.transferId);
+        if (!entry) {
           this.handlers.onLog("drop: unknown transfer chunk");
           break;
         }
         try {
-          asm.addChunk(payload.index, payload.dataBase64);
-          if (payload.index % 8 === 0 || asm.isComplete()) {
+          entry.assembler.addChunk(payload.index, payload.dataBase64);
+          entry.lastActivity = Date.now();
+          if (payload.index % 8 === 0 || entry.assembler.isComplete()) {
             this.handlers.onLog(
-              `file ${asm.name} ${Math.round(asm.progress * 100)}%`,
+              `file ${entry.assembler.name} ${Math.round(entry.assembler.progress * 100)}%`,
             );
           }
         } catch (e) {
@@ -510,9 +565,10 @@ export class SyncSession {
         break;
       }
       case "file_done": {
-        const asm = this.assemblers.get(payload.transferId);
+        const entry = this.assemblers.get(payload.transferId);
         this.assemblers.delete(payload.transferId);
-        if (!asm) break;
+        if (!entry) break;
+        const asm = entry.assembler;
         try {
           const data = asm.finish(payload.sha256);
           if (asm.purpose === "clipboard") {
@@ -887,6 +943,34 @@ export class SyncSession {
         this.peer.deviceId,
       ),
     );
+  }
+
+  /** Exposed for tests — how many chunked receives are in flight. */
+  assemblerCount(): number {
+    return this.assemblers.size;
+  }
+
+  private oldestAssemblerId(): string | undefined {
+    let oldestId: string | undefined;
+    let oldestAt = Number.POSITIVE_INFINITY;
+    for (const [id, entry] of this.assemblers) {
+      if (entry.lastActivity < oldestAt) {
+        oldestAt = entry.lastActivity;
+        oldestId = id;
+      }
+    }
+    return oldestId;
+  }
+
+  private reapIdleAssemblers(now = Date.now()): void {
+    for (const [id, entry] of this.assemblers) {
+      if (now - entry.lastActivity > ASSEMBLER_IDLE_TTL_MS) {
+        this.assemblers.delete(id);
+        this.handlers.onLog(
+          `file transfer ${id} timed out after ${ASSEMBLER_IDLE_TTL_MS / 1000}s idle`,
+        );
+      }
+    }
   }
 
   async sendNoteUpsert(note: {

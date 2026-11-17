@@ -1829,13 +1829,20 @@ export default function App() {
   }, []);
 
   // Auto clipboard sync: poll OS clipboard while Live + setting on.
+  // Text ~450ms; images ~2s and only call rgba() when size changes — a
+  // full RGBA read every tick with a large screenshot held multi-GB in WebView2.
   useEffect(() => {
     if (!settings.autoClipboardSync) return;
+    const MAX_RAW_RGBA_BYTES = 32 * 1024 * 1024;
     let lastText = "";
-    let lastImageKey = "";
+    let lastImageSizeKey = "";
     let seeded = false;
-    let busy = false;
+    let textBusy = false;
+    let imageBusy = false;
     let stopped = false;
+    let skippedHugeLogged = false;
+
+    const sizeKey = (width: number, height: number) => `${width}x${height}`;
 
     const snapshotKeys = async (): Promise<void> => {
       try {
@@ -1847,17 +1854,27 @@ export default function App() {
         try {
           const img = await readImage();
           const size = await img.size();
-          const rgba = await img.rgba();
-          lastImageKey = `${size.width}x${size.height}:${rgba.byteLength}:${rgba[0]}:${rgba[rgba.length - 1]}`;
+          const rawBytes = size.width * size.height * 4;
+          if (rawBytes > MAX_RAW_RGBA_BYTES) {
+            lastImageSizeKey = sizeKey(size.width, size.height);
+            if (!skippedHugeLogged) {
+              log(
+                `auto clipboard image skip: ${size.width}x${size.height} exceeds ${MAX_RAW_RGBA_BYTES} raw bytes`,
+              );
+              skippedHugeLogged = true;
+            }
+          } else {
+            lastImageSizeKey = sizeKey(size.width, size.height);
+          }
         } catch {
-          lastImageKey = "";
+          lastImageSizeKey = "";
         }
       }
       seeded = true;
     };
 
-    const tick = async () => {
-      if (stopped || busy) return;
+    const tickText = async () => {
+      if (stopped || textBusy) return;
       if (!liveRef.current || !sessionRef.current) return;
       const cfg = settingsRef.current;
       if (!cfg.autoClipboardSync) return;
@@ -1865,7 +1882,7 @@ export default function App() {
         await snapshotKeys();
         return;
       }
-      busy = true;
+      textBusy = true;
       try {
         let text = "";
         try {
@@ -1875,46 +1892,71 @@ export default function App() {
         }
         if (text && text !== lastText) {
           lastText = text;
-          lastImageKey = "";
+          lastImageSizeKey = "";
           await sessionRef.current.sendClipboard(text);
           pushHistory(text, "out");
           log("auto clipboard text → phone");
-          return;
-        }
-        if (!cfg.autoClipboardImages) return;
-        try {
-          const img = await readImage();
-          const size = await img.size();
-          const rgba = await img.rgba();
-          const key = `${size.width}x${size.height}:${rgba.byteLength}:${rgba[0]}:${rgba[rgba.length - 1]}`;
-          if (key === lastImageKey) return;
-          lastImageKey = key;
-          lastText = "";
-          const encoded = await encodeRgbaClipboardImage(
-            rgba,
-            size.width,
-            size.height,
-          );
-          await sessionRef.current.sendClipboardImage(encoded);
-          pushHistory("[Image]", "out", { kind: "image" });
-          log("auto clipboard image → phone");
-        } catch {
-          /* no image on clipboard */
         }
       } catch (e) {
         log(`auto clipboard: ${String(e)}`);
       } finally {
-        busy = false;
+        textBusy = false;
+      }
+    };
+
+    const tickImage = async () => {
+      if (stopped || imageBusy) return;
+      if (!liveRef.current || !sessionRef.current) return;
+      const cfg = settingsRef.current;
+      if (!cfg.autoClipboardSync || !cfg.autoClipboardImages) return;
+      if (!seeded) return;
+      imageBusy = true;
+      try {
+        const img = await readImage();
+        const size = await img.size();
+        const key = sizeKey(size.width, size.height);
+        if (key === lastImageSizeKey) return;
+        const rawBytes = size.width * size.height * 4;
+        if (rawBytes > MAX_RAW_RGBA_BYTES) {
+          lastImageSizeKey = key;
+          if (!skippedHugeLogged) {
+            log(
+              `auto clipboard image skip: ${size.width}x${size.height} exceeds ${MAX_RAW_RGBA_BYTES} raw bytes`,
+            );
+            skippedHugeLogged = true;
+          }
+          return;
+        }
+        const rgba = await img.rgba();
+        lastImageSizeKey = key;
+        lastText = "";
+        skippedHugeLogged = false;
+        const encoded = await encodeRgbaClipboardImage(
+          rgba,
+          size.width,
+          size.height,
+        );
+        await sessionRef.current.sendClipboardImage(encoded);
+        pushHistory("[Image]", "out", { kind: "image" });
+        log("auto clipboard image → phone");
+      } catch {
+        /* no image on clipboard */
+      } finally {
+        imageBusy = false;
       }
     };
 
     void snapshotKeys();
-    const id = window.setInterval(() => {
-      void tick();
+    const textId = window.setInterval(() => {
+      void tickText();
     }, 450);
+    const imageId = window.setInterval(() => {
+      void tickImage();
+    }, 2_000);
     return () => {
       stopped = true;
-      window.clearInterval(id);
+      window.clearInterval(textId);
+      window.clearInterval(imageId);
     };
   }, [
     settings.autoClipboardSync,
