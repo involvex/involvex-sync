@@ -275,8 +275,10 @@ export class MobileSession {
   /** Pairing transport: a one-off socket used to exchange handshakes. */
   connect(transport: TransportConfig, opts?: { pairing?: boolean }): void {
     this.pairingTransport = transport;
-    this.pairingMode = opts?.pairing === true;
+    // Tear down first: teardownPairingSocket clears pairingMode. Set the
+    // flag after, otherwise `{ pairing: true }` never sends a pair request.
     this.teardownPairingSocket();
+    this.pairingMode = opts?.pairing === true;
     this.openPairingSocket(transport);
   }
 
@@ -454,6 +456,8 @@ export class MobileSession {
     if (handshake) {
       if (handshake.kind === "involvex-sync-pair-accept") {
         this.pairingMode = false;
+        // Drop the one-off pairing socket; onPairAccept opens the real peer socket.
+        this.teardownPairingSocket();
         await this.handlers.onPairAccept?.(handshake);
         return;
       }
