@@ -750,6 +750,90 @@ describe("SyncSession peer routing", () => {
       body: { to: a.deviceId, payload: { type: "note_upsert" } },
     });
   });
+
+  test("caps concurrent file assemblers at 3 and drops the oldest", async () => {
+    const { session, desk, logs } = harness();
+    const phone = generateDeviceKeys();
+    session.setPeers([peer(phone, "Phone")]);
+    session.setActivePeer(phone.deviceId);
+
+    const offer = (transferId: string) =>
+      serializeFrame(
+        encryptFrame(
+          {
+            v: 1,
+            id: transferId,
+            from: phone.deviceId,
+            ts: Date.now(),
+            payload: {
+              type: "file_offer" as const,
+              transferId,
+              name: `${transferId}.bin`,
+              mimeType: "application/octet-stream",
+              size: 64,
+              totalChunks: 1,
+            },
+          },
+          phone,
+          peerKeys(desk),
+        ),
+      );
+
+    await session.handleIncomingRaw(offer("t1"), 1);
+    await session.handleIncomingRaw(offer("t2"), 1);
+    await session.handleIncomingRaw(offer("t3"), 1);
+    expect(session.assemblerCount()).toBe(3);
+
+    await session.handleIncomingRaw(offer("t4"), 1);
+    expect(session.assemblerCount()).toBe(3);
+    expect(logs.some((l) => l.includes("drop oldest transfer t1"))).toBe(true);
+
+    // Replacing the same transferId does not grow past the cap.
+    await session.handleIncomingRaw(offer("t4"), 1);
+    expect(session.assemblerCount()).toBe(3);
+  });
+
+  test("rejects oversized single-shot file_transfer before decode", async () => {
+    const logs: string[] = [];
+    const files: string[] = [];
+    const desk = generateDeviceKeys();
+    const session = new SyncSession(stored(desk, "Desk"), {
+      onShareUrl: () => {},
+      onClipboard: () => {},
+      onFileTransfer: (file) => {
+        files.push(file.name);
+      },
+      onLog: (line) => logs.push(line),
+    });
+    const phone = generateDeviceKeys();
+    session.setPeers([peer(phone, "Phone")]);
+    session.setActivePeer(phone.deviceId);
+
+    await session.handleIncomingRaw(
+      serializeFrame(
+        encryptFrame(
+          {
+            v: 1,
+            id: "big",
+            from: phone.deviceId,
+            ts: Date.now(),
+            payload: {
+              type: "file_transfer" as const,
+              name: "huge.bin",
+              mimeType: "application/octet-stream",
+              size: 10 * 1024 * 1024,
+              dataBase64: "AAAA",
+            },
+          },
+          phone,
+          peerKeys(desk),
+        ),
+      ),
+      1,
+    );
+    expect(files).toHaveLength(0);
+    expect(logs.some((l) => l.includes("drop: file_transfer size"))).toBe(true);
+  });
 });
 
 describe("wire frame envelope", () => {

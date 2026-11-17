@@ -306,6 +306,14 @@ pub fn read_file(path: String, root: String) -> Result<SyncFilePayload, String> 
         return Err("ignored file name".into());
     }
     let meta = fs::metadata(&abs).map_err(|e| format!("meta: {e}"))?;
+    // Align with protocol MAX_CHUNKED_FILE_BYTES (100 MiB).
+    const MAX_SYNC_FILE_BYTES: u64 = 100 * 1024 * 1024;
+    if meta.len() > MAX_SYNC_FILE_BYTES {
+        return Err(format!(
+            "file too large ({} > {MAX_SYNC_FILE_BYTES})",
+            meta.len()
+        ));
+    }
     let bytes = fs::read(&abs).map_err(|e| format!("read: {e}"))?;
     let mime = mime_guess::from_path(&abs)
         .first_or_octet_stream()

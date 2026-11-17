@@ -190,9 +190,26 @@ fn save_incoming_file(
     use std::fs;
     use std::path::PathBuf;
 
+    // Align with protocol MAX_CHUNKED_FILE_BYTES (100 MiB).
+    const MAX_INCOMING_BYTES: usize = 100 * 1024 * 1024;
+    let trimmed = data_base64.trim();
+    // Base64 is ~4/3 of decoded size; reject obvious oversize before decode.
+    if trimmed.len() > (MAX_INCOMING_BYTES / 3) * 4 + 64 {
+        return Err(format!(
+            "incoming payload too large (base64 {} bytes)",
+            trimmed.len()
+        ));
+    }
+
     let bytes = base64::engine::general_purpose::STANDARD
-        .decode(data_base64.trim())
+        .decode(trimmed)
         .map_err(|e| format!("base64: {e}"))?;
+    if bytes.len() > MAX_INCOMING_BYTES {
+        return Err(format!(
+            "incoming file too large ({} > {MAX_INCOMING_BYTES})",
+            bytes.len()
+        ));
+    }
 
     let safe_name = name
         .chars()
