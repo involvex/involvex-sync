@@ -1,7 +1,8 @@
 # Advanced CodeQL setup (replaces GitHub default setup).
-# java-kotlin uses build-mode: none — Expo module Kotlin is in-repo, but the
-# Android Gradle root (apps/mobile/android) is gitignored / prebuild-only, so
-# default setup's autobuild fails with "No build command found".
+# java-kotlin is omitted: Expo modules ship Kotlin + orphan build.gradle files,
+# but apps/mobile/android is gitignored. build-mode none cannot analyze Kotlin
+# and still fails Gradle dependency extraction on those modules; a manual
+# Android build would need expo prebuild + the SDK on the runner.
 name: "CodeQL Advanced"
 
 on:
@@ -27,8 +28,6 @@ jobs:
       matrix:
         include:
           - language: actions
-            build-mode: none
-          - language: java-kotlin
             build-mode: none
           - language: javascript-typescript
             build-mode: none
