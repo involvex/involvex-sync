@@ -29,6 +29,7 @@ class InvxForegroundService : Service() {
   }
 
   override fun onDestroy() {
+    InvxKeepaliveBridge.stopFolderTick()
     isRunning = false
     super.onDestroy()
   }
@@ -50,6 +51,7 @@ class InvxForegroundService : Service() {
     const val NOTIFICATION_ID = 17391
     const val EXTRA_TITLE = "title"
     const val EXTRA_BODY = "body"
+
     @Volatile
     var isRunning: Boolean = false
   }

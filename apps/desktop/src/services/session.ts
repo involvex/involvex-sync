@@ -101,6 +101,7 @@ export type SessionHandlers = {
       mimeType: string;
       dataBase64: string;
       size: number;
+      relativePath?: string;
     },
     from: string,
   ) => void | Promise<void>;
@@ -591,6 +592,9 @@ export class SyncSession {
             mimeType: payload.mimeType,
             dataBase64: payload.dataBase64,
             size: payload.size,
+            ...(payload.relativePath
+              ? { relativePath: payload.relativePath }
+              : {}),
           },
           body.from,
         );
@@ -686,6 +690,7 @@ export class SyncSession {
               mimeType: asm.mimeType,
               dataBase64: toBase64(data),
               size: asm.size,
+              ...(asm.relativePath ? { relativePath: asm.relativePath } : {}),
             },
             body.from,
           );
@@ -902,6 +907,7 @@ export class SyncSession {
     data: Uint8Array;
     purpose?: "file" | "clipboard";
     hash?: string;
+    relativePath?: string;
   }): Promise<void> {
     if (!this.peer) throw new Error("no peer paired");
     const purpose = file.purpose === "clipboard" ? "clipboard" : "file";
@@ -912,6 +918,8 @@ export class SyncSession {
     }
     const hash =
       file.hash ?? (purpose === "clipboard" ? hashBytes(file.data) : undefined);
+    const relativePath =
+      purpose === "clipboard" ? undefined : file.relativePath;
     if (file.data.byteLength <= FILE_CHUNK_BYTES) {
       await this.sendBody(
         fileTransferBody(
@@ -923,6 +931,7 @@ export class SyncSession {
             size: file.data.byteLength,
             purpose: purpose === "clipboard" ? "clipboard" : undefined,
             hash,
+            relativePath,
           },
           this.peer.deviceId,
         ),
@@ -948,6 +957,7 @@ export class SyncSession {
             totalChunks,
             purpose: purpose === "clipboard" ? "clipboard" : undefined,
             hash,
+            relativePath,
           },
           this.peer.deviceId,
         ),

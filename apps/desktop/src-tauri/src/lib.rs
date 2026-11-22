@@ -180,11 +180,60 @@ fn default_incoming_dir() -> Result<String, String> {
     Ok(default_incoming_path()?.to_string_lossy().to_string())
 }
 
+fn sanitize_path_segment(name: &str) -> String {
+    let safe = name
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '.' || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>();
+    let trimmed = safe.trim_matches('.').trim().to_string();
+    if trimmed.is_empty() || trimmed == "." || trimmed == ".." {
+        format!("file-{}.bin", uuid::Uuid::new_v4())
+    } else {
+        trimmed
+    }
+}
+
+/// Validate an optional relative path (`notes/2026/a.pdf`): relative, no `..`,
+/// max 8 segments. Returns directory segments + basename, or None to fall back
+/// to a root basename save.
+fn parse_relative_path(raw: Option<&str>) -> Option<(Vec<String>, String)> {
+    const MAX_DEPTH: usize = 8;
+    let trimmed = raw?.trim().replace('\\', "/");
+    if trimmed.is_empty() || trimmed.len() > 1_000 {
+        return None;
+    }
+    if trimmed.starts_with('/') || trimmed.contains(':') {
+        return None;
+    }
+    let parts: Vec<&str> = trimmed.split('/').filter(|p| !p.is_empty()).collect();
+    if parts.is_empty() || parts.len() > MAX_DEPTH {
+        return None;
+    }
+    for part in &parts {
+        if *part == "." || *part == ".." {
+            return None;
+        }
+        if part.len() > 200 {
+            return None;
+        }
+    }
+    let mut segs: Vec<String> = parts.iter().map(|p| sanitize_path_segment(p)).collect();
+    let base = segs.pop()?;
+    Some((segs, base))
+}
+
 #[tauri::command]
 fn save_incoming_file(
     name: String,
     data_base64: String,
     directory: Option<String>,
+    relative_path: Option<String>,
 ) -> Result<String, String> {
     use base64::Engine;
     use std::fs;
@@ -211,26 +260,22 @@ fn save_incoming_file(
         ));
     }
 
-    let safe_name = name
-        .chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() || c == '.' || c == '-' || c == '_' {
-                c
-            } else {
-                '_'
-            }
-        })
-        .collect::<String>();
-    let safe_name = if safe_name.is_empty() {
-        format!("file-{}.bin", uuid::Uuid::new_v4())
-    } else {
-        safe_name
-    };
-
-    let dir: PathBuf = match directory.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+    let root: PathBuf = match directory.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
         Some(custom) => PathBuf::from(custom),
         None => default_incoming_path()?,
     };
+
+    let (dir, safe_name) = match parse_relative_path(relative_path.as_deref()) {
+        Some((dirs, base)) => {
+            let mut dir = root;
+            for seg in dirs {
+                dir = dir.join(seg);
+            }
+            (dir, base)
+        }
+        None => (root, sanitize_path_segment(&name)),
+    };
+
     fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let path = dir.join(&safe_name);
     fs::write(&path, bytes).map_err(|e| e.to_string())?;

@@ -140,6 +140,7 @@ import "./App.css";
 type SyncFileInfo = {
   path: string;
   relativeName: string;
+  relativePath: string;
   size: number;
   mtimeMs: number;
 };
@@ -151,11 +152,13 @@ type SyncFilePayload = {
   size: number;
   mtimeMs: number;
   relativeName: string;
+  relativePath: string;
 };
 
 type FolderSyncReady = {
   path: string;
   relativeName: string;
+  relativePath: string;
   size: number;
   mtimeMs: number;
 };
@@ -432,6 +435,7 @@ export default function App() {
             name: file.name || `clipboard-${Date.now()}.jpg`,
             dataBase64: file.dataBase64,
             directory: null,
+            relativePath: null,
           });
           await writeImage(path);
           pushHistory("[Image]", "in", { kind: "image", imagePath: path });
@@ -447,6 +451,7 @@ export default function App() {
             name: file.name,
             dataBase64: file.dataBase64,
             directory: dir,
+            relativePath: file.relativePath ?? null,
           });
           log(`saved file → ${path}`);
           toast(`Saved ${file.name}`, "ok");
@@ -1459,6 +1464,7 @@ export default function App() {
             name: payload.name,
             mimeType: payload.mimeType || "application/octet-stream",
             data,
+            relativePath: payload.relativePath || payload.relativeName,
           });
           folderSyncLedgerRef.current = markSynced(
             folderSyncLedgerRef.current,
@@ -1467,13 +1473,15 @@ export default function App() {
             payload.mtimeMs,
           );
           folderSyncQueueRef.current.shift();
-          setFolderSyncLast(payload.relativeName);
-          log(`folder sync → ${payload.relativeName} (${payload.size} B)`);
-          toast(`Synced ${payload.relativeName}`, "ok");
+          setFolderSyncLast(payload.relativePath || payload.relativeName);
+          log(
+            `folder sync → ${payload.relativePath || payload.relativeName} (${payload.size} B)`,
+          );
+          toast(`Synced ${payload.relativePath || payload.relativeName}`, "ok");
         } catch (e) {
           log(`folder sync failed ${item.relativeName}: ${String(e)}`);
           setFolderSyncStatus(
-            `error · queued ${folderSyncQueueRef.current.length}`,
+            `error · queued ${folderSyncQueueRef.current.length}: ${String(e)}`,
           );
           break;
         }
@@ -1558,6 +1566,7 @@ export default function App() {
         enqueueWatchItem({
           path: f.path,
           relativeName: f.relativeName,
+          relativePath: f.relativePath || f.relativeName,
           size: f.size,
           mtimeMs: f.mtimeMs,
         });
@@ -2960,7 +2969,9 @@ export default function App() {
             </div>
             <p className="muted small">
               One-way PC → phone. Phone must have a save folder picked (SAF).
-              Subfolders are flattened as <code>sub__file.ext</code>. Max{" "}
+              Subfolders recreate on the phone (<code>notes/a.pdf</code>).
+              Ledger keys stay flattened (<code>notes__a.pdf</code>) so
+              already-synced files are not re-sent. Max{" "}
               {Math.floor(MAX_CHUNKED_FILE_BYTES / (1024 * 1024))} MiB per file.
             </p>
             <hr className="divider" />

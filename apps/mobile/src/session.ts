@@ -112,6 +112,7 @@ export type SessionHandlers = {
       mimeType: string;
       dataBase64: string;
       size: number;
+      relativePath?: string;
     },
     from: string,
   ) => void | Promise<void>;
@@ -705,6 +706,9 @@ export class MobileSession {
             mimeType: payload.mimeType,
             dataBase64: payload.dataBase64,
             size: payload.size,
+            ...(payload.relativePath
+              ? { relativePath: payload.relativePath }
+              : {}),
           },
           body.from,
         );
@@ -782,6 +786,7 @@ export class MobileSession {
               mimeType: asm.mimeType,
               dataBase64: toBase64(data),
               size: asm.size,
+              ...(asm.relativePath ? { relativePath: asm.relativePath } : {}),
             },
             body.from,
           );
@@ -972,6 +977,7 @@ export class MobileSession {
     size?: number;
     purpose?: "file" | "clipboard";
     hash?: string;
+    relativePath?: string;
   }): void {
     if (!this.peer) throw new Error("not connected");
     const data =
@@ -985,6 +991,8 @@ export class MobileSession {
     }
     const hash =
       file.hash ?? (purpose === "clipboard" ? hashBytes(data) : undefined);
+    const relativePath =
+      purpose === "clipboard" ? undefined : file.relativePath;
     if (data.byteLength <= FILE_CHUNK_BYTES) {
       this.sendFrame(
         fileTransferBody(
@@ -996,6 +1004,7 @@ export class MobileSession {
             size: data.byteLength,
             purpose: purpose === "clipboard" ? "clipboard" : undefined,
             hash,
+            relativePath,
           },
           this.peer.deviceId,
         ),
@@ -1021,6 +1030,7 @@ export class MobileSession {
             totalChunks,
             purpose: purpose === "clipboard" ? "clipboard" : undefined,
             hash,
+            relativePath,
           },
           this.peer.deviceId,
         ),

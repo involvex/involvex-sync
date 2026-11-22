@@ -135,6 +135,11 @@ export type FileTransferPayload = {
   purpose?: FileTransferPurpose;
   /** sha256 hex of decoded bytes (required when purpose is clipboard). */
   hash?: string;
+  /**
+   * Optional relative path under the receiver save folder (`notes/2026/a.pdf`).
+   * `name` stays the basename. Older peers omit this and save in the root.
+   */
+  relativePath?: string;
 };
 
 export type FileOfferPayload = {
@@ -148,6 +153,11 @@ export type FileOfferPayload = {
   purpose?: FileTransferPurpose;
   /** sha256 hex of full decoded file (for clipboard loop detection). */
   hash?: string;
+  /**
+   * Optional relative path under the receiver save folder (`notes/2026/a.pdf`).
+   * `name` stays the basename. Older peers omit this and save in the root.
+   */
+  relativePath?: string;
 };
 
 export type FileChunkPayload = {

@@ -26,6 +26,11 @@ Payload types: `share_url`, `clipboard_update`, `ping`, `pong`, `pair_ack`,
 Chunked files: soft cap 100 MiB, ~64 KiB decoded chunks, `sha256` on
 `file_done`. Legacy `file_transfer` remains for ≤2 MiB.
 
+Optional `relativePath` on `file_offer` / `file_transfer` (e.g.
+`notes/2026/a.pdf`): relative, forward slashes, no `..`, max 8 segments.
+`name` stays the basename. Receivers recreate directories under the save
+folder; peers that omit the field (or send an invalid path) save in the root.
+
 Clipboard images reuse `file_transfer` / `file_offer` with
 `purpose: "clipboard"` (optional `hash` = sha256 of bytes). Prefer ≤1 MiB
 after compress; hard abort above 2 MiB. Receivers apply to the OS clipboard

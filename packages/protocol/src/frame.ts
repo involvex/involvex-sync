@@ -29,6 +29,7 @@ import {
   MAX_SECRET_LABEL_CHARS,
   PROTOCOL_VERSION,
 } from "./types";
+import { normalizeRelativePath } from "./relativePath";
 import { parseAllowedUrl } from "./url";
 
 export type PeerPublicKeys = {
@@ -183,9 +184,11 @@ export function fileTransferBody(
     size: number;
     purpose?: "file" | "clipboard";
     hash?: string;
+    relativePath?: string;
   },
   to?: string,
 ): MessageBody {
+  const relativePath = normalizeRelativePath(file.relativePath);
   return createMessageBody(
     from,
     {
@@ -196,6 +199,7 @@ export function fileTransferBody(
       size: file.size,
       ...(file.purpose ? { purpose: file.purpose } : {}),
       ...(file.hash ? { hash: file.hash } : {}),
+      ...(relativePath ? { relativePath } : {}),
     },
     to,
   );
@@ -287,6 +291,7 @@ export function fileOfferBody(
     totalChunks: number;
     purpose?: "file" | "clipboard";
     hash?: string;
+    relativePath?: string;
   },
   to?: string,
 ): MessageBody {
@@ -300,6 +305,8 @@ export function fileOfferBody(
   };
   if (offer.purpose) payload.purpose = offer.purpose;
   if (offer.hash) payload.hash = offer.hash;
+  const relativePath = normalizeRelativePath(offer.relativePath);
+  if (relativePath) payload.relativePath = relativePath;
   return createMessageBody(from, payload, to);
 }
 
