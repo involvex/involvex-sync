@@ -10,6 +10,8 @@ import {
 import { invoke } from "@tauri-apps/api/core";
 
 const KEY = "invx.secrets";
+const STORAGE_WRAP_KEY = "invx.secrets.wrapKey";
+const STORAGE_ENVELOPE_V1 = "invx.secrets.v1";
 const UNLOCK_TTL_MS = 5 * 60_000;
 
 export type StoredSecret = {
@@ -35,22 +37,78 @@ type SecretsFile = {
 let unlockedKey: string | null = null;
 let unlockExpiresAt = 0;
 
-function readFile(): SecretsFile {
+function getOrCreateLocalStorageWrapKey(): string {
+  const existing = localStorage.getItem(STORAGE_WRAP_KEY);
+  if (existing && existing.trim()) return existing;
+  const keyHex = generateVaultKeyHex();
+  localStorage.setItem(STORAGE_WRAP_KEY, keyHex);
+  return keyHex;
+}
+
+function encodeStoredFile(data: SecretsFile): string {
+  const keyHex = getOrCreateLocalStorageWrapKey();
+  const payload = JSON.stringify(data);
+  const sealed = sealVaultValue(payload, keyHex);
+  return JSON.stringify({
+    v: STORAGE_ENVELOPE_V1,
+    nonce: sealed.nonce,
+    ciphertext: sealed.ciphertext,
+  });
+}
+
+function decodeStoredFile(raw: string): SecretsFile | null {
   try {
-    const raw = localStorage.getItem(KEY);
-    if (!raw) return { secrets: [], pending: [] };
+    const parsedEnvelope = JSON.parse(raw) as {
+      v?: string;
+      nonce?: string;
+      ciphertext?: string;
+    };
+    if (
+      parsedEnvelope?.v === STORAGE_ENVELOPE_V1 &&
+      typeof parsedEnvelope.nonce === "string" &&
+      typeof parsedEnvelope.ciphertext === "string"
+    ) {
+      const keyHex = getOrCreateLocalStorageWrapKey();
+      const clear = openVaultValue(
+        parsedEnvelope.ciphertext,
+        parsedEnvelope.nonce,
+        keyHex,
+      );
+      const parsed = JSON.parse(clear) as SecretsFile;
+      return {
+        secrets: Array.isArray(parsed.secrets) ? parsed.secrets : [],
+        pending: Array.isArray(parsed.pending) ? parsed.pending : [],
+      };
+    }
+  } catch {
+    // ignore; try legacy plaintext format below
+  }
+
+  try {
     const parsed = JSON.parse(raw) as SecretsFile;
     return {
       secrets: Array.isArray(parsed.secrets) ? parsed.secrets : [],
       pending: Array.isArray(parsed.pending) ? parsed.pending : [],
     };
   } catch {
+    return null;
+  }
+}
+
+function readFile(): SecretsFile {
+  try {
+    const raw = localStorage.getItem(KEY);
+    if (!raw) return { secrets: [], pending: [] };
+    const decoded = decodeStoredFile(raw);
+    if (!decoded) return { secrets: [], pending: [] };
+    return decoded;
+  } catch {
     return { secrets: [], pending: [] };
   }
 }
 
 function writeFile(data: SecretsFile): void {
-  localStorage.setItem(KEY, JSON.stringify(data));
+  localStorage.setItem(KEY, encodeStoredFile(data));
 }
 
 function sortSecrets(secrets: StoredSecret[]): StoredSecret[] {
