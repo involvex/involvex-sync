@@ -2,13 +2,31 @@ package app.involvex.sync.keepalive
 
 import android.content.Intent
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import expo.modules.kotlin.modules.Module
 import expo.modules.kotlin.modules.ModuleDefinition
 import expo.modules.kotlin.Promise
 
 class InvxKeepaliveModule : Module() {
+  private val mainHandler = Handler(Looper.getMainLooper())
+
   override fun definition() = ModuleDefinition {
     Name("InvxKeepalive")
+    Events("onFolderTick")
+
+    OnCreate {
+      InvxKeepaliveBridge.onFolderTick = {
+        mainHandler.post {
+          sendEvent("onFolderTick", emptyMap<String, Any>())
+        }
+      }
+    }
+
+    OnDestroy {
+      InvxKeepaliveBridge.onFolderTick = null
+      InvxKeepaliveBridge.setFolderWatch(false)
+    }
 
     AsyncFunction("start") { title: String, body: String, promise: Promise ->
       val context = appContext.reactContext
@@ -34,12 +52,22 @@ class InvxKeepaliveModule : Module() {
         promise.reject("NO_CONTEXT", "React context missing", null)
         return@AsyncFunction
       }
+      InvxKeepaliveBridge.setFolderWatch(false)
       context.stopService(Intent(context, InvxForegroundService::class.java))
       promise.resolve(null)
     }
 
     AsyncFunction("isRunning") { promise: Promise ->
       promise.resolve(InvxForegroundService.isRunning)
+    }
+
+    AsyncFunction("setFolderWatch") { enabled: Boolean, promise: Promise ->
+      InvxKeepaliveBridge.setFolderWatch(enabled)
+      promise.resolve(null)
+    }
+
+    AsyncFunction("isFolderWatchEnabled") { promise: Promise ->
+      promise.resolve(InvxKeepaliveBridge.folderWatchEnabled)
     }
   }
 }

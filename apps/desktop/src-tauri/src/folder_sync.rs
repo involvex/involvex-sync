@@ -30,7 +30,10 @@ struct WatcherInner {
 #[serde(rename_all = "camelCase")]
 pub struct FolderSyncReady {
     pub path: String,
+    /// Flattened ledger key (`notes__2026__a.pdf`).
     pub relative_name: String,
+    /// Real relative path with `/` (`notes/2026/a.pdf`).
+    pub relative_path: String,
     pub size: u64,
     pub mtime_ms: u64,
 }
@@ -39,7 +42,10 @@ pub struct FolderSyncReady {
 #[serde(rename_all = "camelCase")]
 pub struct SyncFileInfo {
     pub path: String,
+    /// Flattened ledger key (`notes__2026__a.pdf`).
     pub relative_name: String,
+    /// Real relative path with `/` (`notes/2026/a.pdf`).
+    pub relative_path: String,
     pub size: u64,
     pub mtime_ms: u64,
 }
@@ -47,12 +53,16 @@ pub struct SyncFileInfo {
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SyncFilePayload {
+    /// Basename only (`a.pdf`).
     pub name: String,
     pub mime_type: String,
     pub data_base64: String,
     pub size: u64,
     pub mtime_ms: u64,
+    /// Flattened ledger key (`notes__2026__a.pdf`).
     pub relative_name: String,
+    /// Real relative path with `/` (`notes/2026/a.pdf`).
+    pub relative_path: String,
 }
 
 fn is_ignored_name(name: &str) -> bool {
@@ -70,14 +80,21 @@ fn is_ignored_name(name: &str) -> bool {
         || lower == "desktop.ini"
 }
 
-fn flatten_relative(rel: &Path) -> String {
+fn path_segments(rel: &Path) -> Vec<String> {
     rel.components()
         .filter_map(|c| match c {
             Component::Normal(s) => Some(s.to_string_lossy().into_owned()),
             _ => None,
         })
-        .collect::<Vec<_>>()
-        .join("__")
+        .collect()
+}
+
+fn flatten_relative(rel: &Path) -> String {
+    path_segments(rel).join("__")
+}
+
+fn slash_relative(rel: &Path) -> String {
+    path_segments(rel).join("/")
 }
 
 fn mtime_ms(meta: &fs::Metadata) -> u64 {
@@ -124,14 +141,23 @@ fn emit_ready(app: &AppHandle, root: &Path, path: &Path) {
     let relative_name = {
         let flat = flatten_relative(&rel);
         if flat.is_empty() {
-            name
+            name.clone()
         } else {
             flat
+        }
+    };
+    let relative_path = {
+        let slash = slash_relative(&rel);
+        if slash.is_empty() {
+            name.clone()
+        } else {
+            slash
         }
     };
     let payload = FolderSyncReady {
         path: abs.to_string_lossy().to_string(),
         relative_name,
+        relative_path,
         size: meta.len(),
         mtime_ms: mtime_ms(&meta),
     };
@@ -278,10 +304,26 @@ fn collect_files(root: &Path, dir: &Path, out: &mut Vec<SyncFileInfo>) -> Result
         let rel = path
             .strip_prefix(root)
             .map_err(|_| "path escapes sync root".to_string())?;
-        let relative_name = flatten_relative(rel);
+        let relative_name = {
+            let flat = flatten_relative(rel);
+            if flat.is_empty() {
+                name.clone()
+            } else {
+                flat
+            }
+        };
+        let relative_path = {
+            let slash = slash_relative(rel);
+            if slash.is_empty() {
+                name
+            } else {
+                slash
+            }
+        };
         out.push(SyncFileInfo {
             path: path.to_string_lossy().to_string(),
             relative_name,
+            relative_path,
             size: meta.len(),
             mtime_ms: mtime_ms(&meta),
         });
@@ -327,12 +369,55 @@ pub fn read_file(path: String, root: String) -> Result<SyncFilePayload, String> 
             flat
         }
     };
+    let relative_path = {
+        let slash = slash_relative(&rel);
+        if slash.is_empty() {
+            name.clone()
+        } else {
+            slash
+        }
+    };
     Ok(SyncFilePayload {
-        name: relative_name.clone(),
+        name,
         mime_type: mime,
         data_base64: base64::engine::general_purpose::STANDARD.encode(bytes),
         size: meta.len(),
         mtime_ms: mtime_ms(&meta),
         relative_name,
+        relative_path,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::Path;
+
+    #[test]
+    fn flatten_and_slash_relative() {
+        let rel = Path::new("notes").join("2026").join("a.pdf");
+        assert_eq!(flatten_relative(&rel), "notes__2026__a.pdf");
+        assert_eq!(slash_relative(&rel), "notes/2026/a.pdf");
+    }
+
+    #[test]
+    fn resolve_rejects_parent_escape() {
+        let tmp = std::env::temp_dir().join(format!(
+            "invx-folder-sync-test-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&tmp);
+        fs::create_dir_all(&tmp).unwrap();
+        let nested = tmp.join("ok");
+        fs::create_dir_all(&nested).unwrap();
+        let file = nested.join("a.txt");
+        fs::write(&file, b"hi").unwrap();
+        assert!(resolve_under_root(&tmp, &file).is_ok());
+        let escape = tmp.join("..").join("outside.txt");
+        // canonicalize of a non-existent escape path fails, or escapes root.
+        let _ = fs::write(tmp.join("..").join(format!("invx-escape-{}", std::process::id())), b"x");
+        let result = resolve_under_root(&nested, &escape);
+        assert!(result.is_err());
+        let _ = fs::remove_dir_all(&tmp);
+    }
 }

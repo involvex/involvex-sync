@@ -49,7 +49,13 @@ import {
   isImeActive,
   isImeReceiveEnabled,
 } from "../modules/invx-ime/src";
-import { startKeepalive, stopKeepalive } from "../modules/invx-keepalive/src";
+import {
+  addFolderTickListener,
+  isKeepaliveRunning,
+  setFolderWatch,
+  startKeepalive,
+  stopKeepalive,
+} from "../modules/invx-keepalive/src";
 import {
   addMdnsErrorListener,
   addMdnsServiceFoundListener,
@@ -110,6 +116,8 @@ import {
   SizeStabilizer,
   type WatchItem,
 } from "./services/folderSyncWatch";
+import { planSafSave } from "./services/safPathPlan";
+import { resolveSafSaveTarget } from "./services/safRelativePath";
 import {
   applyPeerNoteDelete,
   applyPeerNoteUpsert,
@@ -706,14 +714,18 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       },
       onFileTransfer: async (file) => {
         try {
-          const safe = file.name.replace(/[^\w.-]+/g, "_") || "file.bin";
-          const mime = file.mimeType || guessMime(safe);
+          const mime = file.mimeType || guessMime(file.name);
           const safUri = appSettingsRef.current.incomingFilesUri.trim();
           if (safUri) {
+            const { parentUri, fileName } = await resolveSafSaveTarget(
+              safUri,
+              file.relativePath,
+              file.name,
+            );
             const created =
               await FileSystem.StorageAccessFramework.createFileAsync(
-                safUri,
-                safe,
+                parentUri,
+                fileName,
                 mime,
               );
             await FileSystem.StorageAccessFramework.writeAsStringAsync(
@@ -721,7 +733,8 @@ export function SessionProvider({ children }: { children: ReactNode }) {
               file.dataBase64,
               { encoding: FileSystem.EncodingType.Base64 },
             );
-            log(`saved file → ${created} (${file.size} B)`);
+            const where = file.relativePath ? file.relativePath : fileName;
+            log(`saved file → ${where} (${file.size} B)`);
             return;
           }
           // Fallback: app-private Documents (not visible in Files without debug).
@@ -730,9 +743,11 @@ export function SessionProvider({ children }: { children: ReactNode }) {
             log(`recv file ${file.name} (pick a save folder in Features)`);
             return;
           }
-          const dir = `${root}involvex-Sync/`;
+          const plan = planSafSave(file.relativePath, file.name);
+          const sub = plan.dirs.filter(Boolean).join("/");
+          const dir = `${root}involvex-Sync/${sub ? `${sub}/` : ""}`;
           await FileSystem.makeDirectoryAsync(dir, { intermediates: true });
-          const path = `${dir}${safe}`;
+          const path = `${dir}${plan.fileName}`;
           await FileSystem.writeAsStringAsync(path, file.dataBase64, {
             encoding: FileSystem.EncodingType.Base64,
           });
@@ -1825,11 +1840,29 @@ export function SessionProvider({ children }: { children: ReactNode }) {
         void getSharedFiles().then((files) => {
           if (files.length) setPendingFiles(files);
         });
-      } else if (
-        appSettingsRef.current.folderSyncEnabled &&
-        folderSyncQueueRef.current.length === 0
-      ) {
-        setFolderSyncStatus("paused (background)");
+        if (
+          appSettingsRef.current.folderSyncEnabled &&
+          appSettingsRef.current.folderSyncUri.trim() &&
+          connectedRef.current
+        ) {
+          setFolderSyncStatus("watching");
+        }
+      } else if (appSettingsRef.current.folderSyncEnabled) {
+        const n = folderSyncQueueRef.current.length;
+        void isKeepaliveRunning().then((running) => {
+          if (!appSettingsRef.current.folderSyncEnabled) return;
+          if (n > 0) {
+            setFolderSyncStatus(
+              running
+                ? `watching (background) · queued ${n}`
+                : `queued ${n} (offline)`,
+            );
+            return;
+          }
+          setFolderSyncStatus(
+            running ? "watching (background)" : "paused (background)",
+          );
+        });
       }
     });
     return () => sub.remove();
@@ -1877,6 +1910,8 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     [log],
   );
 
+  const folderSyncLastErrorRef = useRef<string | null>(null);
+
   const drainFolderSyncQueue = useCallback(async () => {
     if (folderSyncBusyRef.current) return;
     const s = sessionRef.current;
@@ -1903,21 +1938,38 @@ export function SessionProvider({ children }: { children: ReactNode }) {
             item.size,
             item.mtimeMs,
           );
+          folderSyncLastErrorRef.current = null;
           log(`folder sync → PC: ${item.name} (${item.size} B)`);
         } catch (e) {
-          log(`folder sync send failed: ${String(e)}`);
+          const msg = String(e);
+          folderSyncLastErrorRef.current = msg;
+          log(`folder sync send failed: ${msg}`);
+          setFolderSyncStatus(
+            `error · queued ${folderSyncQueueRef.current.length}: ${msg}`,
+          );
+          // Leave the failed item at the head; retry on next drain/tick.
+          break;
         }
         folderSyncQueueRef.current.shift();
       }
       const n = folderSyncQueueRef.current.length;
-      if (n > 0) {
+      if (folderSyncLastErrorRef.current && n > 0) {
+        setFolderSyncStatus(
+          `error · queued ${n}: ${folderSyncLastErrorRef.current}`,
+        );
+      } else if (n > 0) {
         setFolderSyncStatus(`queued ${n} (offline)`);
       } else if (
         appSettingsRef.current.folderSyncEnabled &&
         appSettingsRef.current.folderSyncUri.trim()
       ) {
+        const running = await isKeepaliveRunning();
         setFolderSyncStatus(
-          appForegroundRef.current ? "watching" : "paused (background)",
+          appForegroundRef.current
+            ? "watching"
+            : running
+              ? "watching (background)"
+              : "paused (background)",
         );
       } else {
         setFolderSyncStatus("idle");
@@ -1952,6 +2004,29 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     if (connected) void drainFolderSyncQueue();
   }, [connected, drainFolderSyncQueue]);
 
+  // Keepalive service ticks folder sync every 2s while Live + enabled, even
+  // when the activity is backgrounded (JS setInterval pauses off-screen).
+  useEffect(() => {
+    const enabled =
+      appSettings.folderSyncEnabled &&
+      Boolean(appSettings.folderSyncUri.trim()) &&
+      connected;
+    void setFolderWatch(enabled);
+    return () => {
+      void setFolderWatch(false);
+    };
+  }, [appSettings.folderSyncEnabled, appSettings.folderSyncUri, connected]);
+
+  useEffect(() => {
+    const sub = addFolderTickListener(() => {
+      if (!appSettingsRef.current.folderSyncEnabled) return;
+      if (!appSettingsRef.current.folderSyncUri.trim()) return;
+      if (!connectedRef.current) return;
+      void scanFolderSyncOnce();
+    });
+    return () => sub.remove();
+  }, [scanFolderSyncOnce]);
+
   useEffect(() => {
     const enabled = appSettings.folderSyncEnabled;
     const uri = appSettings.folderSyncUri.trim();
@@ -1964,18 +2039,34 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       setFolderSyncStatus(n > 0 ? `queued ${n} (offline)` : "waiting for Live");
       return;
     }
-    if (!appForegroundRef.current) {
-      setFolderSyncStatus("paused (background)");
-      return;
-    }
-    setFolderSyncStatus("watching");
-    void scanFolderSyncOnce();
+    let cancelled = false;
+    void (async () => {
+      const running = await isKeepaliveRunning();
+      if (cancelled) return;
+      if (!appForegroundRef.current) {
+        const n = folderSyncQueueRef.current.length;
+        setFolderSyncStatus(
+          running
+            ? n > 0
+              ? `watching (background) · queued ${n}`
+              : "watching (background)"
+            : "paused (background)",
+        );
+        return;
+      }
+      setFolderSyncStatus("watching");
+      void scanFolderSyncOnce();
+    })();
+    // Foreground fallback interval (native tick also fires; ledger dedupes).
     const id = setInterval(() => {
       if (!appForegroundRef.current || !connectedRef.current) return;
       if (!appSettingsRef.current.folderSyncEnabled) return;
       void scanFolderSyncOnce();
     }, 2000);
-    return () => clearInterval(id);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
   }, [
     appSettings.folderSyncEnabled,
     appSettings.folderSyncUri,

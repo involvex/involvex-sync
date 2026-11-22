@@ -1,5 +1,6 @@
 import { sha256 } from "@noble/hashes/sha2.js";
 import { bytesToHex } from "./hex";
+import { normalizeRelativePath } from "./relativePath";
 import {
   FILE_CHUNK_BYTES,
   MAX_CHUNKED_FILE_BYTES,
@@ -153,6 +154,8 @@ export class ChunkAssembler {
   readonly totalChunks: number;
   readonly purpose: FileTransferPurpose;
   readonly hash?: string;
+  /** Optional relative path under the receiver save folder. */
+  readonly relativePath?: string;
   private parts: (Uint8Array | null)[];
   private received = 0;
 
@@ -164,6 +167,7 @@ export class ChunkAssembler {
     totalChunks: number;
     purpose?: FileTransferPurpose;
     hash?: string;
+    relativePath?: string;
   }) {
     const purpose = offer.purpose === "clipboard" ? "clipboard" : "file";
     if (purpose === "clipboard") {
@@ -180,6 +184,7 @@ export class ChunkAssembler {
     this.totalChunks = offer.totalChunks;
     this.purpose = purpose;
     this.hash = offer.hash;
+    this.relativePath = normalizeRelativePath(offer.relativePath);
     this.parts = Array.from({ length: offer.totalChunks }, () => null);
   }
 

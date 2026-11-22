@@ -152,3 +152,13 @@ export {
   normalizePairId,
 } from "./relayLimits";
 export { looksLikeUrl, parseAllowedUrl } from "./url";
+export {
+  MAX_RELATIVE_PATH_CHARS,
+  MAX_RELATIVE_PATH_DEPTH,
+  MAX_RELATIVE_PATH_SEGMENT_CHARS,
+  flattenRelativePath,
+  normalizeRelativePath,
+  parseRelativePathSegments,
+  relativePathBasename,
+  relativePathDirSegments,
+} from "./relativePath";

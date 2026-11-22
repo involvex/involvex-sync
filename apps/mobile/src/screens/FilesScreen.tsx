@@ -279,9 +279,10 @@ export function FilesScreen() {
       <View style={styles.card}>
         <Text style={styles.h2}>Folder sync → PC</Text>
         <Text style={styles.muted}>
-          Opt-in: watch a folder while Sync is foreground and Live. Root files
-          only (no subfolders). Soft cap 100 MiB. PC saves into its incoming
-          folder.
+          Opt-in: watch a folder while Sync is Live. Root files only (no
+          subfolders). Continues in the background while the keepalive
+          notification is up — OEM battery killers may still pause it. Soft cap
+          100 MiB. PC saves into its incoming folder.
         </Text>
         <View style={styles.settingRow}>
           <View style={styles.settingCopy}>

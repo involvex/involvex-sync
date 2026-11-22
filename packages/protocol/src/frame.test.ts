@@ -3,10 +3,13 @@ import { generateDeviceKeys } from "./crypto";
 import {
   decryptFrame,
   encryptFrame,
+  fileOfferBody,
+  fileTransferBody,
   parseFrame,
   serializeFrame,
   shareUrlBody,
 } from "./frame";
+import { ChunkAssembler } from "./transfer";
 import {
   buildPairAccept,
   buildPairReject,
@@ -74,6 +77,76 @@ describe("frame encrypt/decrypt", () => {
   test("rejects unsafe url in shareUrlBody", () => {
     const phone = generateDeviceKeys();
     expect(shareUrlBody(phone.deviceId, "javascript:alert(1)")).toBeNull();
+  });
+
+  test("file_transfer relativePath roundtrips; omit stays omit", () => {
+    const phone = generateDeviceKeys();
+    const desktop = generateDeviceKeys();
+    const peerDesktop = {
+      deviceId: desktop.deviceId,
+      ed25519PublicKey: desktop.ed25519.publicKey,
+      x25519PublicKey: desktop.x25519.publicKey,
+    };
+    const peerPhone = {
+      deviceId: phone.deviceId,
+      ed25519PublicKey: phone.ed25519.publicKey,
+      x25519PublicKey: phone.x25519.publicKey,
+    };
+
+    const withPath = fileTransferBody(phone.deviceId, {
+      name: "a.pdf",
+      mimeType: "application/pdf",
+      dataBase64: "QQ==",
+      size: 1,
+      relativePath: "notes/2026/a.pdf",
+    });
+    const frame = encryptFrame(withPath, phone, peerDesktop);
+    const opened = decryptFrame(
+      parseFrame(serializeFrame(frame))!,
+      desktop,
+      peerPhone,
+    );
+    expect(opened.ok).toBe(true);
+    if (!opened.ok) return;
+    expect(opened.body.payload.type).toBe("file_transfer");
+    if (opened.body.payload.type === "file_transfer") {
+      expect(opened.body.payload.relativePath).toBe("notes/2026/a.pdf");
+      expect(opened.body.payload.name).toBe("a.pdf");
+    }
+
+    const bare = fileTransferBody(phone.deviceId, {
+      name: "b.pdf",
+      mimeType: "application/pdf",
+      dataBase64: "Qg==",
+      size: 1,
+    });
+    expect(
+      bare.payload.type === "file_transfer" &&
+        bare.payload.relativePath === undefined,
+    ).toBe(true);
+
+    const offer = fileOfferBody(phone.deviceId, {
+      transferId: "t1",
+      name: "a.pdf",
+      mimeType: "application/pdf",
+      size: 1,
+      totalChunks: 1,
+      relativePath: "../evil.pdf",
+    });
+    expect(
+      offer.payload.type === "file_offer" &&
+        offer.payload.relativePath === undefined,
+    ).toBe(true);
+
+    const asm = new ChunkAssembler({
+      transferId: "t1",
+      name: "a.pdf",
+      mimeType: "application/pdf",
+      size: 1,
+      totalChunks: 1,
+      relativePath: "notes/a.pdf",
+    });
+    expect(asm.relativePath).toBe("notes/a.pdf");
   });
 });
 

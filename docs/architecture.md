@@ -101,16 +101,22 @@ InVx Termux package: `com.involvex.termux_app`.
   Android Share.
 - **Folder sync (PC → phone):** opt-in watch on a PC directory (default
   `I:\Downloads\Involvex-Sync`). New/changed files debounce then send via the
-  existing chunked transfer into the phone SAF save folder. Subpaths flatten
-  (`sub/a.pdf` → `sub__a.pdf`). Ledger in localStorage avoids re-sends. Soft
-  cap 100 MiB; offline queue flushes when Live again.
+  existing chunked transfer into the phone SAF save folder. Wire payloads carry
+  optional `relativePath` (`notes/2026/a.pdf`) so the phone recreates
+  subfolders under the SAF save tree; `name` stays the basename. Ledger and
+  Drive object titles keep the flattened key (`notes__2026__a.pdf`) so already
+  synced files are not re-sent. Soft cap 100 MiB; offline queue flushes when
+  Live again.
 - **Folder sync (phone → PC):** opt-in SAF watch folder on the phone (separate
   from the incoming save folder; UI can copy the save folder URI). Polls every
-  2 s while the app is **foreground** and Live; root files only (no recursion).
-  Size must stay stable across two polls before enqueue. Mobile ledger
-  (`invx-folder-sync-ledger.json`) avoids re-sends. Soft cap 100 MiB; queue
-  flushes when Live again. Desktop receives via the normal incoming-files path.
-  No background sync when the process is killed (foreground service is later).
+  2 s while Live; root files only (no recursion). The dataSync keepalive
+  foreground service emits `onFolderTick` so scans continue when the activity
+  is backgrounded (status `watching (background)`). Without the service the
+  status is `paused (background)`. Size must stay stable across two polls
+  before enqueue. Mobile ledger (`invx-folder-sync-ledger.json`) avoids
+  re-sends. Soft cap 100 MiB; queue flushes when Live again. Desktop receives
+  via the normal incoming-files path (optional `relativePath` creates
+  subfolders). OEM battery killers can still stop background work.
 - **Folder sync (PC → Google Drive):** same watcher; opt-in second sink shells
   out to `gws drive +upload` (credentials from `gws auth login`). Separate
   Drive ledger in localStorage. Does not require the phone to be Live.
