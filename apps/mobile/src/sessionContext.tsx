@@ -141,6 +141,7 @@ import {
   upsertLocalSecret,
   type StoredSecret,
 } from "./secretsStore";
+import { enqueueOutbox, listOutbox, removeOutboxItem } from "./outbox";
 import { loadTransportPrefs, saveTransportPrefs } from "./settings";
 import { MobileSession } from "./session";
 import { allowlistedRunSpec } from "./termux";
@@ -192,6 +193,15 @@ export type SessionContextValue = {
   activePeerId: string | null;
   /** Is this specific device connected right now? */
   isPeerOpen: (deviceId: string) => boolean;
+  /** Live path for a peer (`lan` / `relay` / null). */
+  peerPath: (deviceId: string) => "lan" | "relay" | null;
+  transferProgress: {
+    transferId: string;
+    name: string;
+    percent: number;
+    direction: "in" | "out";
+  } | null;
+  abortTransfer: (transferId: string) => void;
   host: string;
   setHost: (v: string) => void;
   port: string;
@@ -321,6 +331,15 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   const [pairPaste, setPairPaste] = useState("");
   const [status, setStatus] = useState("idle");
   const [logs, setLogs] = useState<string[]>([]);
+  const [transferProgress, setTransferProgress] = useState<{
+    transferId: string;
+    name: string;
+    percent: number;
+    direction: "in" | "out";
+  } | null>(null);
+  const flushOutboxToPeerRef = useRef<(deviceId: string) => Promise<void>>(
+    async () => {},
+  );
   const [pairingJson, setPairingJson] = useState("");
   const [nearby, setNearby] = useState<DiscoveredService[]>([]);
   const [history, setHistory] = useState<ClipboardHistoryEntry[]>([]);
@@ -862,6 +881,19 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       },
       onPeerOnline: (deviceId) => {
         void catchUpSharedToPeerRef.current(deviceId);
+        void flushOutboxToPeerRef.current(deviceId);
+      },
+      onTransferProgress: (info) => setTransferProgress(info),
+      onTransferComplete: (info) => {
+        setTransferProgress(null);
+        log(`transfer done ${info.name}`);
+      },
+      onTransferFailed: (info) => {
+        setTransferProgress(null);
+        log(`transfer failed: ${info.reason}`);
+      },
+      onRelayError: (error) => {
+        log(`relay: ${error}`);
       },
       onPairAccept: async (accept) => {
         if (pairTimerRef.current) {
@@ -1156,6 +1188,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   async function handleSharedText(text: string): Promise<void> {
     const s = sessionRef.current;
     if (!s) return;
+    const peerId = s.activeDeviceId ?? activePeerId;
     try {
       if (looksLikeUrl(text)) {
         s.sendShareUrl(text);
@@ -1168,7 +1201,17 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       }
       await clearSharedText();
     } catch (e) {
-      log(`share failed: ${String(e)} — connect first`);
+      if (peerId) {
+        await enqueueOutbox(
+          peerId,
+          looksLikeUrl(text) ? "share_url" : "clipboard",
+          text,
+        );
+        await clearSharedText();
+        log(`share queued: ${String(e)}`);
+      } else {
+        log(`share failed: ${String(e)} — connect first`);
+      }
     }
   }
 
@@ -1249,11 +1292,13 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     };
     if (peers.length > 0) {
       // Multi-host: refresh every paired device's transport, then open all.
+      // LAN mode still falls back to each peer's relay room automatically.
       session.setPeers(peers, (p) => ({
         ...transport,
         host: p.host ?? host,
         port: p.port ?? nextPort,
       }));
+      session.preferLanNext();
       session.connectAll();
     } else {
       session.connect(transport);
@@ -1263,6 +1308,30 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       mode === "lan" ? `LAN ${host}:${port}` : mode,
     );
   }
+
+  async function flushOutboxToPeer(deviceId: string): Promise<void> {
+    const s = sessionRef.current;
+    if (!s || !s.isPeerOpen(deviceId)) return;
+    const prev = s.activeDeviceId;
+    s.setActivePeer(deviceId);
+    try {
+      const items = await listOutbox(deviceId);
+      for (const item of items) {
+        try {
+          if (item.kind === "share_url") s.sendShareUrl(item.text);
+          else s.sendClipboard(item.text);
+          await removeOutboxItem(item.id);
+          log(`outbox flushed ${item.kind}`);
+        } catch (e) {
+          log(`outbox keep: ${String(e)}`);
+          break;
+        }
+      }
+    } finally {
+      if (prev) s.setActivePeer(prev);
+    }
+  }
+  flushOutboxToPeerRef.current = flushOutboxToPeer;
 
   function disconnect(): void {
     clearPairTimer();
@@ -1606,6 +1675,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   function onConnectPeer(deviceId: string): void {
     const s = sessionRef.current;
     if (!s) return;
+    s.preferLanNext(deviceId);
     s.connectPeer(deviceId);
     const chosen = peers.find((p) => p.deviceId === deviceId);
     void startKeepalive("involvex Sync", `LAN ${chosen?.host ?? host}`);
@@ -2078,6 +2148,10 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     peers,
     activePeerId,
     isPeerOpen: (deviceId) => sessionRef.current?.isPeerOpen(deviceId) ?? false,
+    peerPath: (deviceId) => sessionRef.current?.peerPath(deviceId) ?? null,
+    transferProgress,
+    abortTransfer: (transferId) =>
+      sessionRef.current?.abortTransfer(transferId, "cancelled"),
     host,
     setHost,
     port,

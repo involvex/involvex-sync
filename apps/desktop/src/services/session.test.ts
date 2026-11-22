@@ -326,15 +326,21 @@ describe("SyncSession peer routing", () => {
       updatedAt: 1,
     });
 
-    expect(relaySent).toHaveLength(3);
+    // share + find (active) + note sealed once per paired peer (A and B).
+    expect(relaySent).toHaveLength(4);
     expect(sent).toEqual([]);
-    for (const raw of relaySent) {
-      const sealed = parseFrame(raw);
+    const expectPeer = (raw: string | undefined, keys: typeof a) => {
+      expect(raw).toBeDefined();
+      const sealed = parseFrame(raw as string);
       expect(sealed).not.toBeNull();
-      expect(decryptFrame(sealed!, a, peerKeys(desk))).toMatchObject({
+      expect(decryptFrame(sealed!, keys, peerKeys(desk))).toMatchObject({
         ok: true,
       });
-    }
+    };
+    expectPeer(relaySent[0], a);
+    expectPeer(relaySent[1], a);
+    expectPeer(relaySent[2], a);
+    expectPeer(relaySent[3], b);
   });
 
   test("never uses ws_send when another device's socket is ambiguous", async () => {
@@ -749,6 +755,64 @@ describe("SyncSession peer routing", () => {
       ok: true,
       body: { to: a.deviceId, payload: { type: "note_upsert" } },
     });
+  });
+
+  test("shared fan-out uses each peer's relay room when LAN is down", async () => {
+    const { session, desk } = harness();
+    const a = generateDeviceKeys();
+    const b = generateDeviceKeys();
+    session.setPeers([peer(a, "Phone"), peer(b, "Laptop")]);
+    session.setActivePeer(a.deviceId);
+    const byPeer = new Map<string, string[]>();
+    session.setRelaySenders(
+      new Map([
+        [
+          a.deviceId,
+          (raw) => {
+            const list = byPeer.get(a.deviceId) ?? [];
+            list.push(raw);
+            byPeer.set(a.deviceId, list);
+          },
+        ],
+        [
+          b.deviceId,
+          (raw) => {
+            const list = byPeer.get(b.deviceId) ?? [];
+            list.push(raw);
+            byPeer.set(b.deviceId, list);
+          },
+        ],
+      ]),
+    );
+
+    await session.sendNoteUpsert({
+      id: "n3",
+      title: "relay",
+      body: "both",
+      updatedAt: 1,
+    });
+
+    expect(sent).toEqual([]);
+    const aFrames = byPeer.get(a.deviceId) ?? [];
+    const bFrames = byPeer.get(b.deviceId) ?? [];
+    expect(aFrames).toHaveLength(1);
+    expect(bFrames).toHaveLength(1);
+    for (const [peerKeysLocal, raw] of [
+      [a, aFrames[0]] as const,
+      [b, bFrames[0]] as const,
+    ]) {
+      expect(raw).toBeDefined();
+      const frame = parseFrame(raw ?? "");
+      expect(frame).not.toBeNull();
+      if (!frame) continue;
+      expect(decryptFrame(frame, peerKeysLocal, peerKeys(desk))).toMatchObject({
+        ok: true,
+        body: {
+          to: peerKeysLocal.deviceId,
+          payload: { type: "note_upsert" },
+        },
+      });
+    }
   });
 
   test("caps concurrent file assemblers at 3 and drops the oldest", async () => {

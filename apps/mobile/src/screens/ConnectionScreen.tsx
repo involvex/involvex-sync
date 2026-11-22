@@ -31,6 +31,7 @@ export function ConnectionScreen() {
     peer,
     peers,
     isPeerOpen,
+    peerPath,
     pairWithNearby,
     openScanner,
     onUnpair,
@@ -53,7 +54,10 @@ export function ConnectionScreen() {
     <KeyboardScreen contentContainerStyle={styles.content}>
       <View style={styles.card}>
         <Text style={styles.h2}>Connection</Text>
-        <Text style={styles.muted}>Host and mode are saved on this phone.</Text>
+        <Text style={styles.muted}>
+          Host and mode are saved on this phone. LAN mode tries the PC on Wi‑Fi
+          first, then the Cloudflare relay automatically.
+        </Text>
         <View style={styles.segment}>
           {(["lan", "relay", "myfritz"] as TransportMode[]).map((m) => (
             <Pressable
@@ -74,9 +78,9 @@ export function ConnectionScreen() {
         </View>
         {mode === "relay" ? (
           <Text style={styles.muted}>
-            Relay is for away-from-home text/clipboard/commands. Prefer LAN for
-            large files (≤100 MiB soft cap). Screen mirroring stays on USB/Wi‑Fi
-            ADB via the PC (scrcpy / Escrcpy) — not this tunnel.
+            Force-relay skips LAN. Prefer LAN mode at home (auto-fallback when
+            away). Large files need both sides online; screen mirroring stays on
+            USB/Wi‑Fi ADB via the PC (scrcpy / Escrcpy).
           </Text>
         ) : null}
         {mode !== "relay" ? (
@@ -220,6 +224,7 @@ export function ConnectionScreen() {
         )}
         {peers.map((p) => {
           const open = isPeerOpen(p.deviceId);
+          const path = peerPath(p.deviceId);
           return (
             <View key={p.deviceId} style={styles.peerRow}>
               <View style={styles.peerInfo}>
@@ -228,7 +233,7 @@ export function ConnectionScreen() {
                   {p.deviceId === peer?.deviceId ? " · active" : ""}
                 </Text>
                 <Text style={styles.muted}>
-                  {open ? "connected" : "offline"}
+                  {open ? `connected (${path ?? "?"})` : "offline"}
                   {p.host ? ` · ${p.host}:${p.port ?? 17391}` : ""}
                 </Text>
               </View>

@@ -199,12 +199,21 @@ supported topology. Each pairing is an independent, symmetric relationship.
   the phone battery. Now 2.5 s → 5 s → 10 s … capped at 60 s, reset on open.
 - **Relay fallback for everything:** `sendRaw` tries the LAN socket first and
   falls back to the relay for any payload type — clipboard, files, notes,
-  keyboard, links and commands — not just share links.
-- **Relay limits:** the Durable Object is a small ciphertext mailbox (free-plan
-  hibernation, short offline queue). Prefer LAN for large chunked files
-  (soft cap 100 MiB) and clipboard images (≤2 MiB). Screen mirroring and
-  video never use the relay — use local scrcpy/Escrcpy. PC↔PC has no LAN dial
-  from the desktop listener; both sides join the same relay room.
+  keyboard, links and commands — not just share links. The phone in `lan`
+  mode fails over to that peer's relay room when the LAN socket dies; force
+  `relay` mode skips LAN. Desktop persists `relayEnabled` and opens **one
+  room per paired device** so notes/secrets can fan out off-LAN.
+- **Relay hello:** each relay socket must send a signed
+  `involvex-sync-relay-hello` (Ed25519 over room id + nonce). The worker pins
+  the first verified public key per device id and rejects a takeover that
+  only knows the two device ids.
+- **Relay limits:** live forward accepts sealed frames up to ~256 KiB (a
+  sealed 64 KiB `file_chunk`). The offline mailbox only stores small frames
+  (≤8 KiB) so a photo cannot evict clipboard/link/note messages. Prefer LAN
+  for large transfers; both sides must be online for chunked files over the
+  relay. Screen mirroring never uses the relay — use local scrcpy/Escrcpy.
+  PC↔PC has no LAN dial from the desktop listener; both sides join the same
+  relay rooms.
 - **Firewall:** the inbound rule is `profile=any` (was private-only) because a
   laptop on public Wi-Fi or a phone hotspot is classified public. Pairing is
   still the gate, not the network profile.

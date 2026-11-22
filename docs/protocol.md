@@ -68,6 +68,28 @@ Notes / secrets (synced across every connected host):
 
 Signature input UTF-8: `v{version}|{from}|{nonce}|{ciphertext}`.
 
+## Relay hello (cleartext, worker-verified)
+
+Before the Durable Object admits a socket to a pair room (or replaces an
+existing one / flushes the offline queue), the client sends:
+
+```json
+{
+  "kind": "involvex-sync-relay-hello",
+  "deviceId": "…",
+  "roomId": "sorted-A:B",
+  "ed25519PublicKey": "hex",
+  "nonce": "hex",
+  "ts": 1710000000000,
+  "signature": "hex-ed25519"
+}
+```
+
+Sign input UTF-8:
+`involvex-sync-relay-hello|{deviceId}|{roomId}|{ed25519PublicKey}|{nonce}|{ts}`.
+The worker pins the first verified public key per device id. Live forward
+cap ≈ 256 KiB; offline queue only stores frames ≤ 8 KiB.
+
 `from` is cleartext on purpose: with several paired devices the receiver picks
 the decryption key by sender identity instead of guessing. `to` is optional;
 when present it must equal the receiver's own device id or the frame is

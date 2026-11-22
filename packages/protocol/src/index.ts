@@ -135,4 +135,20 @@ export {
   type ChunkPlan,
   type ChunkedSendMeta,
 } from "./transfer";
+export {
+  buildRelayHello,
+  parseRelayError,
+  parseRelayHello,
+  relayHelloSignInput,
+  verifyRelayHello,
+  type RelayErrorMessage,
+  type RelayHello,
+} from "./relayHello";
+export {
+  RELAY_LIVE_MAX_CHARS,
+  RELAY_QUEUE_MAX,
+  RELAY_QUEUE_MAX_CHARS,
+  RELAY_QUEUE_TTL_MS,
+  normalizePairId,
+} from "./relayLimits";
 export { looksLikeUrl, parseAllowedUrl } from "./url";

@@ -152,6 +152,26 @@ export type SessionHandlers = {
    * different conn id). Used to replay notes/secrets/vault catch-up.
    */
   onPeerOnline?: (deviceId: string) => void | Promise<void>;
+  /** Inbound or outbound chunked transfer progress (0–100). */
+  onTransferProgress?: (info: {
+    transferId: string;
+    name: string;
+    percent: number;
+    direction: "in" | "out";
+  }) => void;
+  onTransferComplete?: (info: {
+    transferId: string;
+    name: string;
+    direction: "in" | "out";
+  }) => void;
+  onTransferFailed?: (info: {
+    transferId: string;
+    name?: string;
+    reason: string;
+    direction: "in" | "out";
+  }) => void;
+  /** Worker / relay rejected a frame (e.g. too large). */
+  onRelayError?: (error: string) => void;
   onLog: (line: string) => void;
 };
 
@@ -180,8 +200,17 @@ export class SyncSession {
     request: PairRequestPayload;
     connId?: number;
   }> = [];
-  private relaySend: ((raw: string) => void) | null = null;
+  /** Per-peer relay senders (one Cloudflare room each). */
+  private relaySendByPeer = new Map<string, (raw: string) => void>();
+  /**
+   * Legacy single-room fallback used by tests / older callers: any peerId
+   * routes through this function when no per-peer sender is registered.
+   */
+  private relaySendAny: ((raw: string) => void) | null = null;
   private assemblers = new Map<string, AssemblerEntry>();
+  /** Outbound chunked transfers the UI may cancel mid-send. */
+  private outboundAbort = new Set<string>();
+  private outboundNames = new Map<string, string>();
 
   constructor(stored: StoredDeviceKeys, handlers: SessionHandlers) {
     this.local = toDeviceKeys(stored);
@@ -283,13 +312,45 @@ export class SyncSession {
 
   /**
    * Relay fallback used when the LAN socket cannot carry the frame.
-   * Null (default) = LAN only, matching the pre-relay behavior.
+   * One sender covers every peer id (tests / single-room callers).
    */
   setRelaySender(send: ((raw: string) => void) | null): void {
-    this.relaySend = send;
+    this.relaySendAny = send;
+  }
+
+  /**
+   * One Cloudflare room per paired device. Preferred over {@link setRelaySender}.
+   */
+  setRelaySenders(
+    senders: ReadonlyMap<string, (raw: string) => void> | null,
+  ): void {
+    this.relaySendByPeer = senders
+      ? new Map<string, (raw: string) => void>(senders)
+      : new Map<string, (raw: string) => void>();
+  }
+
+  /** Surface a worker `{ error }` so in-flight sends can fail visibly. */
+  reportRelayError(error: string): void {
+    this.handlers.onRelayError?.(error);
+    this.handlers.onLog(`relay: ${error}`);
   }
 
   async handleIncomingRaw(raw: string, connId?: number): Promise<void> {
+    // Relay control messages are not sealed frames.
+    try {
+      const parsed = JSON.parse(raw) as { error?: string; ok?: string };
+      if (
+        typeof parsed.error === "string" &&
+        Object.keys(parsed).length === 1
+      ) {
+        this.reportRelayError(parsed.error);
+        return;
+      }
+      if (parsed.ok === "hello") return;
+    } catch {
+      /* sealed / pair JSON */
+    }
+
     const handshake = parsePairHandshake(raw);
     if (handshake) {
       if (handshake.kind === "involvex-sync-pair-request") {
@@ -367,7 +428,8 @@ export class SyncSession {
       } catch (e) {
         // The socket died (reconnect in progress) — forget it, use the relay.
         if (peerId) this.connByDevice.delete(peerId);
-        return this.sendViaRelay(raw, e);
+        if (!peerId) throw e instanceof Error ? e : new Error(String(e));
+        return this.sendViaRelay(peerId, raw, e);
       }
     }
 
@@ -375,7 +437,13 @@ export class SyncSession {
     // device is paired; with several it could reach the wrong socket, so go
     // straight to the relay, which is addressed per peer.
     if (this.peerMap.size > 1) {
+      if (!peerId) {
+        throw new Error(
+          "active device socket unknown (several devices paired)",
+        );
+      }
       return this.sendViaRelay(
+        peerId,
         raw,
         "active device socket unknown (several devices paired)",
       );
@@ -385,19 +453,29 @@ export class SyncSession {
       await invoke("ws_send", { message: raw });
       return;
     } catch (e) {
-      return this.sendViaRelay(raw, e);
+      if (!peerId) throw e instanceof Error ? e : new Error(String(e));
+      return this.sendViaRelay(peerId, raw, e);
     }
   }
 
-  private sendViaRelay(raw: string, lanError: unknown): Promise<void> {
+  private relaySenderFor(peerId: string): ((raw: string) => void) | null {
+    return this.relaySendByPeer.get(peerId) ?? this.relaySendAny;
+  }
+
+  private sendViaRelay(
+    peerId: string,
+    raw: string,
+    lanError: unknown,
+  ): Promise<void> {
     const reason =
       lanError instanceof Error ? lanError : new Error(String(lanError));
-    if (!this.relaySend) return Promise.reject(reason);
+    const send = this.relaySenderFor(peerId);
+    if (!send) return Promise.reject(reason);
     this.handlers.onLog(
-      `relay: LAN send failed (${String(lanError)}), using relay`,
+      `relay: LAN send failed (${String(lanError)}), using relay for ${peerId}`,
     );
     try {
-      this.relaySend(raw);
+      send(raw);
       return Promise.resolve();
     } catch (e) {
       return Promise.reject(e instanceof Error ? e : new Error(String(e)));
@@ -554,13 +632,24 @@ export class SyncSession {
         try {
           entry.assembler.addChunk(payload.index, payload.dataBase64);
           entry.lastActivity = Date.now();
+          const percent = Math.round(entry.assembler.progress * 100);
           if (payload.index % 8 === 0 || entry.assembler.isComplete()) {
-            this.handlers.onLog(
-              `file ${entry.assembler.name} ${Math.round(entry.assembler.progress * 100)}%`,
-            );
+            this.handlers.onLog(`file ${entry.assembler.name} ${percent}%`);
           }
+          this.handlers.onTransferProgress?.({
+            transferId: payload.transferId,
+            name: entry.assembler.name,
+            percent,
+            direction: "in",
+          });
         } catch (e) {
           this.handlers.onLog(`chunk error: ${String(e)}`);
+          this.handlers.onTransferFailed?.({
+            transferId: payload.transferId,
+            name: entry.assembler.name,
+            reason: String(e),
+            direction: "in",
+          });
         }
         break;
       }
@@ -584,6 +673,11 @@ export class SyncSession {
               body.from,
             );
             this.handlers.onLog(`clipboard image complete ${asm.name}`);
+            this.handlers.onTransferComplete?.({
+              transferId: payload.transferId,
+              name: asm.name,
+              direction: "in",
+            });
             break;
           }
           await this.handlers.onFileTransfer?.(
@@ -596,14 +690,34 @@ export class SyncSession {
             body.from,
           );
           this.handlers.onLog(`file complete ${asm.name}`);
+          this.handlers.onTransferComplete?.({
+            transferId: payload.transferId,
+            name: asm.name,
+            direction: "in",
+          });
         } catch (e) {
           this.handlers.onLog(`file done failed: ${String(e)}`);
+          this.handlers.onTransferFailed?.({
+            transferId: payload.transferId,
+            name: asm.name,
+            reason: String(e),
+            direction: "in",
+          });
         }
         break;
       }
       case "file_abort": {
+        const entry = this.assemblers.get(payload.transferId);
         this.assemblers.delete(payload.transferId);
-        this.handlers.onLog(`file abort ${payload.transferId}`);
+        this.handlers.onLog(
+          `file abort ${payload.transferId}${payload.reason ? `: ${payload.reason}` : ""}`,
+        );
+        this.handlers.onTransferFailed?.({
+          transferId: payload.transferId,
+          name: entry?.assembler.name,
+          reason: payload.reason ?? "aborted",
+          direction: "in",
+        });
         break;
       }
       case "notification_mirror": {
@@ -687,8 +801,7 @@ export class SyncSession {
 
   /**
    * Seal + deliver one frame to a specific paired device. Prefers that
-   * device's LAN socket; falls back to the active-peer relay room only
-   * when the target is the active peer (relay is one room at a time).
+   * device's LAN socket; falls back to that peer's relay room when registered.
    */
   private async sendEncryptedTo(
     peerId: string,
@@ -703,19 +816,14 @@ export class SyncSession {
         return;
       } catch (e) {
         this.connByDevice.delete(peerId);
-        if (peerId === this.activePeerId) {
-          return this.sendViaRelay(raw, e);
-        }
-        throw e instanceof Error ? e : new Error(String(e));
+        return this.sendViaRelay(peerId, raw, e);
       }
     }
-    if (peerId === this.activePeerId) {
-      return this.sendViaRelay(
-        raw,
-        "shared fan-out: active peer socket unknown",
-      );
-    }
-    throw new Error(`host ${peerId} not connected`);
+    return this.sendViaRelay(
+      peerId,
+      raw,
+      `shared fan-out: ${peerId} socket unknown`,
+    );
   }
 
   /**
@@ -826,53 +934,102 @@ export class SyncSession {
     }
     const transferId = bytesToHex(randomBytes(8));
     const totalChunks = chunkCountForSize(file.data.byteLength);
-    await this.sendBody(
-      fileOfferBody(
-        this.local.deviceId,
-        {
-          transferId,
-          name: file.name,
-          mimeType: file.mimeType,
-          size: file.data.byteLength,
-          totalChunks,
-          purpose: purpose === "clipboard" ? "clipboard" : undefined,
-          hash,
-        },
-        this.peer.deviceId,
-      ),
-    );
-    const iter = iterateFileChunks(file.data);
-    let step = iter.next();
-    let sent = 0;
-    while (!step.done) {
+    this.outboundAbort.delete(transferId);
+    this.outboundNames.set(transferId, file.name);
+    try {
       await this.sendBody(
-        fileChunkBody(
+        fileOfferBody(
           this.local.deviceId,
           {
             transferId,
-            index: step.value.index,
-            dataBase64: step.value.dataBase64,
+            name: file.name,
+            mimeType: file.mimeType,
+            size: file.data.byteLength,
+            totalChunks,
+            purpose: purpose === "clipboard" ? "clipboard" : undefined,
+            hash,
           },
           this.peer.deviceId,
         ),
       );
-      sent += 1;
-      // Let the WebView GC between bursts so multi‑MB sends don't OOM.
-      if (sent % 4 === 0) {
-        await new Promise<void>((resolve) => setTimeout(resolve, 0));
+      const iter = iterateFileChunks(file.data);
+      let step = iter.next();
+      let sent = 0;
+      while (!step.done) {
+        if (this.outboundAbort.has(transferId)) {
+          this.outboundAbort.delete(transferId);
+          await this.sendBody(
+            fileAbortBody(
+              this.local.deviceId,
+              { transferId, reason: "cancelled" },
+              this.peer.deviceId,
+            ),
+          );
+          this.handlers.onTransferFailed?.({
+            transferId,
+            name: file.name,
+            reason: "cancelled",
+            direction: "out",
+          });
+          throw new Error("transfer cancelled");
+        }
+        await this.sendBody(
+          fileChunkBody(
+            this.local.deviceId,
+            {
+              transferId,
+              index: step.value.index,
+              dataBase64: step.value.dataBase64,
+            },
+            this.peer.deviceId,
+          ),
+        );
+        sent += 1;
+        const percent = Math.round((sent / totalChunks) * 100);
+        if (sent % 8 === 0 || sent === totalChunks) {
+          this.handlers.onLog(`file ${file.name} ${percent}%`);
+        }
+        this.handlers.onTransferProgress?.({
+          transferId,
+          name: file.name,
+          percent,
+          direction: "out",
+        });
+        // Let the WebView GC between bursts so multi‑MB sends don't OOM.
+        if (sent % 4 === 0) {
+          await new Promise<void>((resolve) => setTimeout(resolve, 0));
+        }
+        step = iter.next();
       }
-      step = iter.next();
+      await this.sendBody(
+        fileDoneBody(
+          this.local.deviceId,
+          { transferId, sha256: step.value },
+          this.peer.deviceId,
+        ),
+      );
+      this.handlers.onLog(
+        `sent ${purpose === "clipboard" ? "clipboard image" : "file"} ${file.name} (${file.data.byteLength} B, ${totalChunks} chunks)`,
+      );
+      this.handlers.onTransferComplete?.({
+        transferId,
+        name: file.name,
+        direction: "out",
+      });
+    } catch (e) {
+      if (!(e instanceof Error && e.message === "transfer cancelled")) {
+        this.handlers.onTransferFailed?.({
+          transferId,
+          name: file.name,
+          reason: e instanceof Error ? e.message : String(e),
+          direction: "out",
+        });
+      }
+      throw e;
+    } finally {
+      this.outboundNames.delete(transferId);
+      this.outboundAbort.delete(transferId);
     }
-    await this.sendBody(
-      fileDoneBody(
-        this.local.deviceId,
-        { transferId, sha256: step.value },
-        this.peer.deviceId,
-      ),
-    );
-    this.handlers.onLog(
-      `sent ${purpose === "clipboard" ? "clipboard image" : "file"} ${file.name} (${file.data.byteLength} B, ${totalChunks} chunks)`,
-    );
   }
 
   async sendKeyboardText(text: string): Promise<void> {
@@ -935,6 +1092,10 @@ export class SyncSession {
 
   abortTransfer(transferId: string, reason?: string): void {
     this.assemblers.delete(transferId);
+    if (this.outboundNames.has(transferId)) {
+      this.outboundAbort.add(transferId);
+      return;
+    }
     if (!this.peer) return;
     void this.sendBody(
       fileAbortBody(
@@ -943,6 +1104,29 @@ export class SyncSession {
         this.peer.deviceId,
       ),
     );
+    this.handlers.onTransferFailed?.({
+      transferId,
+      reason: reason ?? "aborted",
+      direction: "in",
+    });
+  }
+
+  /** Active inbound assemblers (for UI cancel buttons). */
+  inboundTransfers(): Array<{
+    transferId: string;
+    name: string;
+    percent: number;
+  }> {
+    const out: Array<{ transferId: string; name: string; percent: number }> =
+      [];
+    for (const [transferId, entry] of this.assemblers) {
+      out.push({
+        transferId,
+        name: entry.assembler.name,
+        percent: Math.round(entry.assembler.progress * 100),
+      });
+    }
+    return out;
   }
 
   /** Exposed for tests — how many chunked receives are in flight. */

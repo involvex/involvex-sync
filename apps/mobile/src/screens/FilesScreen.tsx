@@ -39,6 +39,8 @@ export function FilesScreen() {
     pickAndSendFile,
     pendingFiles,
     sendPendingFiles,
+    transferProgress,
+    abortTransfer,
     folderSyncStatus,
     pickFolderSyncFolder,
     clearFolderSyncFolder,
@@ -255,6 +257,23 @@ export function FilesScreen() {
         >
           <Text style={styles.btnText}>Send file to PC</Text>
         </Pressable>
+        {transferProgress ? (
+          <View style={styles.settingRow}>
+            <View style={styles.settingCopy}>
+              <Text style={styles.body}>
+                {transferProgress.direction === "out" ? "Sending" : "Receiving"}{" "}
+                {transferProgress.name}
+              </Text>
+              <Text style={styles.muted}>{transferProgress.percent}%</Text>
+            </View>
+            <Pressable
+              style={styles.linkBtn}
+              onPress={() => abortTransfer(transferProgress.transferId)}
+            >
+              <Text style={styles.linkText}>Cancel</Text>
+            </Pressable>
+          </View>
+        ) : null}
       </View>
 
       <View style={styles.card}>

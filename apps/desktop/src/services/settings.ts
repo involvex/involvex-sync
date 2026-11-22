@@ -48,6 +48,11 @@ export type DesktopSettings = {
   scrcpyExtraArgs: string;
   /** Allow phone to request a local adb screencap on this PC. Default false. */
   allowRemoteAdbScreencap: boolean;
+  /**
+   * Keep a Cloudflare relay room open for every paired device (away-from-home
+   * fallback). Persisted so a reboot still dials the relay.
+   */
+  relayEnabled: boolean;
 };
 
 const defaults: DesktopSettings = {
@@ -67,6 +72,7 @@ const defaults: DesktopSettings = {
   escrcpyExePath: "",
   scrcpyExtraArgs: "",
   allowRemoteAdbScreencap: false,
+  relayEnabled: false,
 };
 
 function parseTheme(value: unknown): ThemePreference {

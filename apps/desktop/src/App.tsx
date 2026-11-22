@@ -54,6 +54,7 @@ import {
   savePeer,
   toDeviceKeys,
 } from "./services/identity";
+import { enqueueOutbox, listOutbox, removeOutboxItem } from "./services/outbox";
 import { RelayClient } from "./services/relay";
 import { SyncSession } from "./services/session";
 import {
@@ -258,8 +259,19 @@ export default function App() {
   const [logs, setLogs] = useState<string[]>([]);
   const [firewallMsg, setFirewallMsg] = useState<string>("");
   const [relayStatus, setRelayStatus] = useState<string>("off");
-  const [relayEnabled, setRelayEnabled] = useState(false);
-  const [relay, setRelay] = useState<RelayClient | null>(null);
+  const [relayEnabled, setRelayEnabled] = useState(
+    () => loadSettings().relayEnabled,
+  );
+  const [relays, setRelays] = useState<Map<string, RelayClient>>(
+    () => new Map(),
+  );
+  const relaysRef = useRef<Map<string, RelayClient>>(new Map());
+  const [transferProgress, setTransferProgress] = useState<{
+    transferId: string;
+    name: string;
+    percent: number;
+    direction: "in" | "out";
+  } | null>(null);
   const [pendingPair, setPendingPair] = useState<PairRequestPayload | null>(
     null,
   );
@@ -316,6 +328,9 @@ export default function App() {
     async () => {},
   );
   const catchUpSharedToPeerRef = useRef<(deviceId: string) => Promise<void>>(
+    async () => {},
+  );
+  const flushOutboxToPeerRef = useRef<(deviceId: string) => Promise<void>>(
     async () => {},
   );
 
@@ -516,6 +531,22 @@ export default function App() {
         onAdbScreencapRequestRef.current(requestId),
       onPeerOnline: (deviceId) => {
         void catchUpSharedToPeerRef.current(deviceId);
+        void flushOutboxToPeerRef.current(deviceId);
+      },
+      onTransferProgress: (info) => {
+        setTransferProgress(info);
+      },
+      onTransferComplete: (info) => {
+        setTransferProgress(null);
+        log(`transfer done ${info.name} (${info.direction})`);
+      },
+      onTransferFailed: (info) => {
+        setTransferProgress(null);
+        log(`transfer failed ${info.name ?? info.transferId}: ${info.reason}`);
+        toast(`Transfer failed: ${info.reason}`, "err");
+      },
+      onRelayError: (error) => {
+        toast(`Relay: ${error}`, "err");
       },
       onNotificationMirror: async (note) => {
         if (!settingsRef.current.showPhoneNotifications) {
@@ -682,42 +713,69 @@ export default function App() {
     return () => window.clearInterval(id);
   }, [tab]);
 
-  // Relay socket. Rebuilt when the paired peer changes because the room name
-  // is `localId:peerId` — an old socket would sit in a room nobody else uses.
+  // One Cloudflare room per paired device. Kept across peer-list edits.
   useEffect(() => {
-    if (!relayEnabled) {
-      setRelay(null);
+    if (!relayEnabled || !identity) {
+      for (const client of relaysRef.current.values()) client.disconnect();
+      relaysRef.current = new Map();
+      setRelays(new Map());
       setRelayStatus("off");
+      sessionRef.current?.setRelaySenders(null);
+      sessionRef.current?.setRelaySender(null);
       return;
     }
-    if (!identity) return;
-    const client = new RelayClient(toDeviceKeys(identity), peer?.deviceId, {
-      onMessage: (raw) => {
-        void sessionRef.current?.handleIncomingRaw(raw);
-      },
-      onStatus: (s) => {
-        setRelayStatus(s);
-        log(s);
-      },
-    });
-    client.connect();
-    setRelay(client);
-    return () => {
-      client.disconnect();
-      setRelay(null);
-      setRelayStatus("off");
-    };
-    // `log` is stable (useCallback); listing it would re-create the socket
-    // every time the log list re-renders.
+    const keys = toDeviceKeys(identity);
+    const prev = relaysRef.current;
+    const next = new Map<string, RelayClient>();
+    const peerCount = peers.length;
+    for (const p of peers) {
+      const existing = prev.get(p.deviceId);
+      if (existing) {
+        next.set(p.deviceId, existing);
+        continue;
+      }
+      const peerName = p.name;
+      const peerId = p.deviceId;
+      const client = new RelayClient(keys, peerId, {
+        onMessage: (raw) => {
+          void sessionRef.current?.handleIncomingRaw(raw);
+        },
+        onStatus: (s) => {
+          const ready = [...relaysRef.current.values()].filter(
+            (c) => c.isReady,
+          ).length;
+          setRelayStatus(
+            ready > 0 ? `relay connected (${ready}/${peerCount})` : s,
+          );
+          log(`${peerName}: ${s}`);
+          if (s === "relay connected") {
+            if (sessionRef.current?.connIdFor(peerId) === undefined) {
+              void catchUpSharedToPeerRef.current(peerId);
+              void flushOutboxToPeerRef.current(peerId);
+            }
+          }
+        },
+        onError: (error) => {
+          sessionRef.current?.reportRelayError(error);
+          toast(`Relay: ${error}`, "err");
+        },
+      });
+      client.connect();
+      next.set(peerId, client);
+    }
+    for (const [id, client] of prev) {
+      if (!next.has(id)) client.disconnect();
+    }
+    relaysRef.current = next;
+    setRelays(next);
+    const senders = new Map<string, (raw: string) => void>();
+    for (const [id, client] of next) {
+      senders.set(id, (raw) => client.send(raw));
+    }
+    sessionRef.current?.setRelaySenders(senders);
+    sessionRef.current?.setRelaySender(null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [relayEnabled, identity, peer?.deviceId]);
-
-  // Every encrypted frame can fall back to the relay once one is connected.
-  useEffect(() => {
-    sessionRef.current?.setRelaySender(
-      relay ? (raw: string) => relay.send(raw) : null,
-    );
-  }, [relay, session]);
+  }, [relayEnabled, identity, peers.map((p) => p.deviceId).join(",")]);
 
   useEffect(() => {
     void (async () => {
@@ -1246,16 +1304,51 @@ export default function App() {
     if (live) void flushNotesAndSecrets();
   }, [live, flushNotesAndSecrets]);
 
-  // Away-from-home: when the relay attaches and the active peer has no LAN
-  // socket, push the snapshot so the mailbox can deliver it later.
-  useEffect(() => {
-    if (relayStatus !== "relay connected") return;
-    const activeId = activePeerId;
-    if (!activeId) return;
-    if (sessionRef.current?.connIdFor(activeId) !== undefined) return;
-    void catchUpSharedToPeer(activeId);
-  }, [relayStatus, activePeerId, catchUpSharedToPeer]);
   const keyboardReady = settings.sendKeysToPhone && live && phoneKeyboardActive;
+
+  const flushOutboxToPeer = useCallback(
+    async (deviceId: string) => {
+      const s = sessionRef.current;
+      if (!s) return;
+      // Temporarily select the outbox peer so sendShareUrl/sendClipboard target it.
+      const prev = s.activeDeviceId;
+      s.setActivePeer(deviceId);
+      try {
+        const items = listOutbox(deviceId);
+        for (const item of items) {
+          try {
+            if (item.kind === "share_url") {
+              await s.sendShareUrl(item.text);
+            } else {
+              await s.sendClipboard(item.text);
+            }
+            removeOutboxItem(item.id);
+            log(`outbox flushed ${item.kind} → ${deviceId}`);
+          } catch (e) {
+            log(`outbox keep ${item.id}: ${String(e)}`);
+            break;
+          }
+        }
+      } finally {
+        if (prev) s.setActivePeer(prev);
+      }
+    },
+    [log],
+  );
+  flushOutboxToPeerRef.current = flushOutboxToPeer;
+
+  // Away-from-home: when any relay room reports connected and that peer has no
+  // LAN socket, push shared state + flush the text outbox.
+  useEffect(() => {
+    if (!relayStatus.startsWith("relay connected")) return;
+    for (const p of peers) {
+      if (sessionRef.current?.connIdFor(p.deviceId) !== undefined) continue;
+      const client = relays.get(p.deviceId);
+      if (!client?.isReady) continue;
+      void catchUpSharedToPeer(p.deviceId);
+      void flushOutboxToPeer(p.deviceId);
+    }
+  }, [relayStatus, peers, relays, catchUpSharedToPeer, flushOutboxToPeer]);
 
   const pushQueueBounded = (
     q: FolderSyncReady[],
@@ -1795,7 +1888,7 @@ export default function App() {
   }
 
   async function onSendClipboard(): Promise<void> {
-    if (!session || !live) {
+    if (!session) {
       toast("Phone not connected", "err");
       return;
     }
@@ -1812,6 +1905,20 @@ export default function App() {
       log("sent clipboard text");
       toast("Clipboard sent", "ok");
     } catch (e) {
+      const peerId = session.activeDeviceId;
+      if (peerId) {
+        try {
+          const text = await readText();
+          if (text) {
+            enqueueOutbox(peerId, "clipboard", text);
+            log(`send clipboard: ${String(e)} — queued`);
+            toast("Queued until phone reconnects", "info");
+            return;
+          }
+        } catch {
+          /* fall through */
+        }
+      }
       log(`send clipboard: ${String(e)}`);
       toast("Send failed", "err");
     }
@@ -2041,6 +2148,7 @@ export default function App() {
   function onRelayToggle(): void {
     const next = !relayEnabled;
     setRelayEnabled(next);
+    saveSettings({ relayEnabled: next });
     log(next ? "relay starting…" : "relay stopped");
   }
 
@@ -2059,8 +2167,15 @@ export default function App() {
       log(`sent link ${url}`);
       toast("Link sent", "ok");
     } catch (e) {
-      log(`send failed: ${String(e)}`);
-      toast("Send failed — phone not connected", "err");
+      const peerId = session.activeDeviceId;
+      if (peerId) {
+        enqueueOutbox(peerId, "share_url", url);
+        log(`send failed: ${String(e)} — queued`);
+        toast("Queued until phone reconnects", "info");
+      } else {
+        log(`send failed: ${String(e)}`);
+        toast("Send failed — phone not connected", "err");
+      }
     }
   }
 
@@ -2711,13 +2826,13 @@ export default function App() {
                 value={sendUrl}
                 onChange={(e) => setSendUrl(e.target.value)}
                 placeholder="https://…"
-                disabled={!live && !relay}
+                disabled={!live && !relayEnabled}
               />
             </label>
             <div className="row">
               <button
                 type="button"
-                disabled={!live && !relay}
+                disabled={!live && !relayEnabled}
                 onClick={() => void onSendLinkRelayAware()}
               >
                 Send link
@@ -2769,12 +2884,32 @@ export default function App() {
             <div className="row">
               <button
                 type="button"
-                disabled={!live}
+                disabled={!live && !relayEnabled}
                 onClick={() => fileInputRef.current?.click()}
               >
                 Send file to phone
               </button>
+              {transferProgress ? (
+                <button
+                  type="button"
+                  className="ghost"
+                  onClick={() =>
+                    session?.abortTransfer(
+                      transferProgress.transferId,
+                      "cancelled",
+                    )
+                  }
+                >
+                  Cancel transfer
+                </button>
+              ) : null}
             </div>
+            {transferProgress ? (
+              <p className="muted small">
+                {transferProgress.direction === "out" ? "Sending" : "Receiving"}{" "}
+                {transferProgress.name}: {transferProgress.percent}%
+              </p>
+            ) : null}
             <hr className="divider" />
             <h3>Folder sync → phone</h3>
             <label className="check">
@@ -3842,18 +3977,19 @@ export default function App() {
                   Enable autostart
                 </button>
                 <button type="button" className="ghost" onClick={onRelayToggle}>
-                  {relay ? "Stop relay" : "Connect Cloudflare relay"}
+                  {relayEnabled ? "Stop relay" : "Connect Cloudflare relay"}
                 </button>
               </div>
               {firewallMsg ? <p className="small">{firewallMsg}</p> : null}
               <p className="muted small">Relay: {relayStatus}</p>
               <p className="muted small">
-                Prefer LAN for large files. Mirror uses local ADB/scrcpy — not
-                the relay. PC↔PC stays relay-only (desktop does not dial LAN).
+                Prefer LAN for large files. Relay stays on across restarts when
+                enabled (one room per paired device). Mirror uses local
+                ADB/scrcpy — not the relay. PC↔PC stays relay-only.
               </p>
               <p className="muted small">
                 mDNS advertises <code>_invxconnect._tcp.local</code>. Relay is
-                for away-from-home — not for LAN pair.
+                for away-from-home — not for first-time LAN pair.
               </p>
             </article>
           </div>

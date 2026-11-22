@@ -5,6 +5,16 @@
  * Google OAuth lives in workers/oauth-token-exchange (not here).
  */
 
+import {
+  RELAY_LIVE_MAX_CHARS,
+  RELAY_QUEUE_MAX,
+  RELAY_QUEUE_MAX_CHARS,
+  RELAY_QUEUE_TTL_MS,
+  normalizePairId,
+  parseRelayHello,
+  verifyRelayHello,
+} from "@involvex/protocol";
+
 export interface Env {
   PAIR_ROOM: DurableObjectNamespace;
 }
@@ -15,8 +25,16 @@ type QueuedFrame = {
   ts: number;
 };
 
-const QUEUE_TTL_MS = 5 * 60_000;
-const QUEUE_MAX = 32;
+type PendingSession = {
+  ws: WebSocket;
+  deviceId: string;
+  roomId: string;
+  connectedAt: number;
+};
+
+const HELLO_TIMEOUT_MS = 15_000;
+
+export { normalizePairId };
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
@@ -27,6 +45,8 @@ export default {
         ok: true,
         service: "involvex-sync-relay",
         note: "ciphertext mailbox only",
+        liveMaxChars: RELAY_LIVE_MAX_CHARS,
+        queueMaxChars: RELAY_QUEUE_MAX_CHARS,
       });
     }
 
@@ -52,18 +72,12 @@ export default {
   },
 };
 
-export function normalizePairId(raw: string): string {
-  const parts = raw.split(":").filter(Boolean);
-  if (parts.length === 2) {
-    return [...parts].sort().join(":");
-  }
-  return raw;
-}
-
 export class PairRoom implements DurableObject {
   private state: DurableObjectState;
-  /** deviceId → websocket */
+  /** deviceId → websocket (admitted after a verified hello). */
   private sessions = new Map<string, WebSocket>();
+  /** Sockets waiting for a signed hello before they can replace / flush. */
+  private pending = new Map<WebSocket, PendingSession>();
 
   constructor(state: DurableObjectState, _env: Env) {
     this.state = state;
@@ -72,6 +86,7 @@ export class PairRoom implements DurableObject {
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
     const pairParam = url.searchParams.get("deviceId") ?? "";
+    const roomId = normalizePairId(pairParam);
     // Explicit self id wins: the old heuristic (first free half of `A:B`)
     // mislabelled a *reconnecting* device — if A reconnected while B was
     // absent it took B's slot and the pair stopped delivering.
@@ -84,44 +99,52 @@ export class PairRoom implements DurableObject {
     const pair = new WebSocketPair();
     const [client, server] = Object.values(pair) as [WebSocket, WebSocket];
 
-    // A reconnect replaces the previous socket for this id — close the old
-    // one so it cannot receive frames behind the new one's back.
-    const stale = this.sessions.get(deviceId);
-    if (stale && stale !== server) {
-      try {
-        stale.close(1000, "replaced");
-      } catch {
-        /* already closing */
-      }
-    }
+    // Do not replace the live session yet — wait for a verified hello so a
+    // client that only knows the two device ids cannot take the room.
+    this.state.acceptWebSocket(server, [`pending:${deviceId}`]);
+    this.pending.set(server, {
+      ws: server,
+      deviceId,
+      roomId,
+      connectedAt: Date.now(),
+    });
 
-    this.state.acceptWebSocket(server, [deviceId]);
-    this.sessions.set(deviceId, server);
-
-    // Flush short offline queue for this device.
-    const queue = (await this.state.storage.get<QueuedFrame[]>("queue")) ?? [];
-    const keep: QueuedFrame[] = [];
-    const now = Date.now();
-    for (const item of queue) {
-      if (now - item.ts > QUEUE_TTL_MS) continue;
-      if (item.from === deviceId) {
-        keep.push(item);
-        continue;
-      }
-      try {
-        server.send(item.raw);
-      } catch {
-        keep.push(item);
-      }
-    }
-    await this.state.storage.put("queue", keep.slice(-QUEUE_MAX));
+    // Drop pending sockets that never hello.
+    await this.state.storage.setAlarm(Date.now() + HELLO_TIMEOUT_MS);
 
     return new Response(null, { status: 101, webSocket: client });
+  }
+
+  async alarm(): Promise<void> {
+    const now = Date.now();
+    for (const [ws, pending] of this.pending) {
+      if (now - pending.connectedAt < HELLO_TIMEOUT_MS) continue;
+      this.pending.delete(ws);
+      try {
+        ws.send(JSON.stringify({ error: "hello timeout" }));
+      } catch {
+        /* ignore */
+      }
+      try {
+        ws.close(1000, "hello timeout");
+      } catch {
+        /* ignore */
+      }
+    }
+    if (this.pending.size > 0) {
+      await this.state.storage.setAlarm(Date.now() + HELLO_TIMEOUT_MS);
+    }
   }
 
   async webSocketMessage(ws: WebSocket, message: string | ArrayBuffer) {
     const raw =
       typeof message === "string" ? message : new TextDecoder().decode(message);
+
+    const pending = this.pending.get(ws);
+    if (pending) {
+      await this.handleHello(ws, pending, raw);
+      return;
+    }
 
     let from: string;
     try {
@@ -132,8 +155,8 @@ export class PairRoom implements DurableObject {
       return;
     }
 
-    // Relay never decrypts. Optional: reject oversized frames.
-    if (raw.length > 64_000) {
+    // Live forward fits a sealed file_chunk; larger frames are rejected.
+    if (raw.length > RELAY_LIVE_MAX_CHARS) {
       ws.send(JSON.stringify({ error: "frame too large" }));
       return;
     }
@@ -151,14 +174,96 @@ export class PairRoom implements DurableObject {
     }
 
     if (!delivered) {
+      // Offline mailbox is for small frames only (clipboard/link/notes/commands).
+      if (raw.length > RELAY_QUEUE_MAX_CHARS) {
+        ws.send(
+          JSON.stringify({ error: "peer offline; frame too large to queue" }),
+        );
+        return;
+      }
       const queue =
         (await this.state.storage.get<QueuedFrame[]>("queue")) ?? [];
       queue.push({ from, raw, ts: Date.now() });
-      await this.state.storage.put("queue", queue.slice(-QUEUE_MAX));
+      await this.state.storage.put("queue", queue.slice(-RELAY_QUEUE_MAX));
     }
   }
 
+  private async handleHello(
+    ws: WebSocket,
+    pending: PendingSession,
+    raw: string,
+  ): Promise<void> {
+    const hello = parseRelayHello(raw);
+    if (!hello) {
+      ws.send(JSON.stringify({ error: "hello required" }));
+      return;
+    }
+    if (hello.deviceId !== pending.deviceId) {
+      ws.send(JSON.stringify({ error: "hello device mismatch" }));
+      return;
+    }
+    if (hello.roomId !== pending.roomId) {
+      ws.send(JSON.stringify({ error: "hello room mismatch" }));
+      return;
+    }
+
+    const pinKey = `pin:${pending.deviceId}`;
+    const pinned = (await this.state.storage.get<string>(pinKey)) ?? null;
+    if (!verifyRelayHello(hello, pending.roomId, pinned)) {
+      ws.send(JSON.stringify({ error: "hello invalid" }));
+      try {
+        ws.close(1008, "hello invalid");
+      } catch {
+        /* ignore */
+      }
+      this.pending.delete(ws);
+      return;
+    }
+
+    if (!pinned) {
+      await this.state.storage.put(pinKey, hello.ed25519PublicKey);
+    }
+
+    this.pending.delete(ws);
+
+    // A reconnect replaces the previous admitted socket for this id.
+    const stale = this.sessions.get(pending.deviceId);
+    if (stale && stale !== ws) {
+      try {
+        stale.close(1000, "replaced");
+      } catch {
+        /* already closing */
+      }
+    }
+    this.sessions.set(pending.deviceId, ws);
+
+    try {
+      ws.send(JSON.stringify({ ok: "hello" }));
+    } catch {
+      /* ignore */
+    }
+
+    // Flush short offline queue for this device.
+    const queue = (await this.state.storage.get<QueuedFrame[]>("queue")) ?? [];
+    const keep: QueuedFrame[] = [];
+    const now = Date.now();
+    for (const item of queue) {
+      if (now - item.ts > RELAY_QUEUE_TTL_MS) continue;
+      if (item.from === pending.deviceId) {
+        keep.push(item);
+        continue;
+      }
+      try {
+        ws.send(item.raw);
+      } catch {
+        keep.push(item);
+      }
+    }
+    await this.state.storage.put("queue", keep.slice(-RELAY_QUEUE_MAX));
+  }
+
   webSocketClose(ws: WebSocket) {
+    this.pending.delete(ws);
     for (const [id, sock] of this.sessions) {
       if (sock === ws) this.sessions.delete(id);
     }
@@ -178,7 +283,7 @@ export function sanitizeId(raw: string): string {
 }
 
 /// Which device is this socket? The explicit `self` parameter wins, but only
-/// when it is one of the pair's two ids — otherwise anyone holding the pair
+/// when it is one of the two pair halves — otherwise anyone holding the pair
 /// string could sit in the room as a third (unremovable) listener. Old
 /// clients that omit `self` get the legacy `A:B` guess.
 export function resolveDeviceId(
