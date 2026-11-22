@@ -143,7 +143,10 @@ bun run relay:dev
 ```
 
 The worker never decrypts. Free-plan limits apply (hibernation WebSockets,
-small offline queue, no file transfer).
+small offline queue for text-sized frames). Live rooms forward sealed
+`file_chunk` frames (both sides must be online); prefer LAN for large files.
+Enable **Connect Cloudflare relay** on the desktop (persisted) and leave the
+phone on **lan** mode — it fails over to the relay when Wi‑Fi is gone.
 
 ## Google Drive sync (desktop)
 

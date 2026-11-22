@@ -9,7 +9,11 @@ const utf8d = new TextDecoder();
 
 function secureRandom(length: number): Uint8Array {
   const out = new Uint8Array(length);
-  const webCrypto = globalThis.crypto;
+  // Cast: Workers / Node / browsers all expose getRandomValues, but
+  // `globalThis.crypto` is missing from some lib targets (e.g. ES2022-only).
+  const webCrypto = (
+    globalThis as { crypto?: { getRandomValues(a: Uint8Array): Uint8Array } }
+  ).crypto;
   if (!webCrypto?.getRandomValues) {
     throw new Error(
       "crypto.getRandomValues unavailable — load a polyfill (e.g. react-native-get-random-values) before @involvex/protocol",

@@ -1,5 +1,16 @@
 import { describe, expect, test } from "bun:test";
 import {
+  RELAY_LIVE_MAX_CHARS,
+  RELAY_QUEUE_MAX_CHARS,
+  buildRelayHello,
+  encryptFrame,
+  fileChunkBody,
+  generateDeviceKeys,
+  serializeFrame,
+  toBase64,
+  FILE_CHUNK_BYTES,
+} from "@involvex/protocol";
+import {
   guessSelfId,
   normalizePairId,
   resolveDeviceId,
@@ -81,5 +92,43 @@ describe("guessSelfId (legacy fallback)", () => {
   test("single-id pairs are returned unchanged", () => {
     expect(guessSelfId("solo", room())).toBe("solo");
     expect(guessSelfId("", room())).toBe("");
+  });
+});
+
+describe("relay frame sizing", () => {
+  test("a sealed max chunk is under the live cap and over the queue cap", () => {
+    const a = generateDeviceKeys();
+    const b = generateDeviceKeys();
+    const chunk = new Uint8Array(FILE_CHUNK_BYTES);
+    crypto.getRandomValues(chunk);
+    const raw = serializeFrame(
+      encryptFrame(
+        fileChunkBody(
+          a.deviceId,
+          {
+            transferId: "t1",
+            index: 0,
+            dataBase64: toBase64(chunk),
+          },
+          b.deviceId,
+        ),
+        a,
+        {
+          deviceId: b.deviceId,
+          ed25519PublicKey: b.ed25519.publicKey,
+          x25519PublicKey: b.x25519.publicKey,
+        },
+      ),
+    );
+    expect(raw.length).toBeLessThanOrEqual(RELAY_LIVE_MAX_CHARS);
+    expect(raw.length).toBeGreaterThan(RELAY_QUEUE_MAX_CHARS);
+  });
+
+  test("relay hello verifies for the pair room", () => {
+    const a = generateDeviceKeys();
+    const b = generateDeviceKeys();
+    const hello = buildRelayHello(a, b.deviceId);
+    expect(hello.roomId).toBe(normalizePairId(`${a.deviceId}:${b.deviceId}`));
+    expect(hello.deviceId).toBe(a.deviceId);
   });
 });

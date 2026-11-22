@@ -18,6 +18,7 @@ import {
   assertClipboardImageSize,
   assertSendableSize,
   buildPairRequest,
+  buildRelayHello,
   bytesToHex,
   chunkCountForSize,
   clipboardUpdateBody,
@@ -38,6 +39,7 @@ import {
   parseAllowedUrl,
   parseFrame,
   parsePairHandshake,
+  parseRelayError,
   randomBytes,
   adbScreencapRequestBody,
   remoteCommandBody,
@@ -58,12 +60,18 @@ const RECONNECT_BASE_MS = 2_500;
 const RECONNECT_MAX_MS = 60_000;
 const RECONNECT_MAX_ATTEMPTS = 8;
 
+export type ConnPath = "lan" | "relay";
+
 /** One live socket per paired host. */
 type PeerConn = {
   peer: StoredPeer;
   keys: PeerPublicKeys;
   transport: TransportConfig;
   ws: WebSocket | null;
+  /** Which URL is open (or next to try). */
+  path: ConnPath;
+  /** True after relay hello ack (LAN sockets are ready on open). */
+  ready: boolean;
   reconnectAttempts: number;
   reconnectTimer: ReturnType<typeof setTimeout> | null;
 };
@@ -142,6 +150,24 @@ export type SessionHandlers = {
    * Used to replay notes/secrets/vault catch-up to that host.
    */
   onPeerOnline?: (deviceId: string) => void | Promise<void>;
+  onTransferProgress?: (info: {
+    transferId: string;
+    name: string;
+    percent: number;
+    direction: "in" | "out";
+  }) => void;
+  onTransferComplete?: (info: {
+    transferId: string;
+    name: string;
+    direction: "in" | "out";
+  }) => void;
+  onTransferFailed?: (info: {
+    transferId: string;
+    name?: string;
+    reason: string;
+    direction: "in" | "out";
+  }) => void;
+  onRelayError?: (error: string) => void;
   onStatus: (status: string) => void;
   onLog: (line: string) => void;
 };
@@ -160,6 +186,8 @@ export class MobileSession {
   private pairingMode = false;
   private identityMeta: { name: string; type: DeviceType };
   private assemblers = new Map<string, ChunkAssembler>();
+  private outboundAbort = new Set<string>();
+  private outboundNames = new Map<string, string>();
 
   constructor(stored: StoredDeviceKeys, handlers: SessionHandlers) {
     this.local = toDeviceKeys(stored);
@@ -191,6 +219,8 @@ export class MobileSession {
           keys,
           transport: transportFor(p),
           ws: null,
+          path: transportFor(p).mode === "relay" ? "relay" : "lan",
+          ready: false,
           reconnectAttempts: 0,
           reconnectTimer: null,
         });
@@ -266,6 +296,8 @@ export class MobileSession {
         relayUrl: "",
       },
       ws: null,
+      path: "lan",
+      ready: false,
       reconnectAttempts: 0,
       reconnectTimer: null,
     });
@@ -291,19 +323,32 @@ export class MobileSession {
   }
 
   get isOpen(): boolean {
-    return this.activeConn()?.ws?.readyState === WebSocket.OPEN;
+    const conn = this.activeConn();
+    return Boolean(
+      conn?.ready && conn.ws && conn.ws.readyState === WebSocket.OPEN,
+    );
   }
 
   /** Is any paired host connected? */
   get anyOpen(): boolean {
     for (const conn of this.conns.values()) {
-      if (conn.ws?.readyState === WebSocket.OPEN) return true;
+      if (conn.ready && conn.ws?.readyState === WebSocket.OPEN) return true;
     }
     return false;
   }
 
   isPeerOpen(deviceId: string): boolean {
-    return this.conns.get(deviceId)?.ws?.readyState === WebSocket.OPEN;
+    const conn = this.conns.get(deviceId);
+    return Boolean(
+      conn?.ready && conn.ws && conn.ws.readyState === WebSocket.OPEN,
+    );
+  }
+
+  /** Which path is live for a peer (`lan` / `relay` / null). */
+  peerPath(deviceId: string): ConnPath | null {
+    const conn = this.conns.get(deviceId);
+    if (!conn?.ready || conn.ws?.readyState !== WebSocket.OPEN) return null;
+    return conn.path;
   }
 
   private activeConn(): PeerConn | undefined {
@@ -311,58 +356,157 @@ export class MobileSession {
     return id ? this.conns.get(id) : undefined;
   }
 
+  /** Prefer LAN again on the next dial (e.g. user tapped Connect). */
+  preferLanNext(deviceId?: string): void {
+    const targets = deviceId
+      ? [this.conns.get(deviceId)].filter(Boolean)
+      : [...this.conns.values()];
+    for (const conn of targets) {
+      if (!conn) continue;
+      if (conn.transport.mode === "relay") {
+        conn.path = "relay";
+      } else if (conn.transport.mode === "myfritz") {
+        conn.path = "lan";
+      } else {
+        conn.path = "lan";
+      }
+      conn.reconnectAttempts = 0;
+    }
+  }
+
   /** Open one paired host's socket (idempotent). */
   private openConn(conn: PeerConn): void {
     if (conn.ws && conn.ws.readyState <= WebSocket.OPEN) return;
+
+    // Force-relay mode never dials LAN. MyFritz stays on the forwarded host.
+    if (conn.transport.mode === "relay") {
+      conn.path = "relay";
+    } else if (conn.transport.mode === "myfritz") {
+      conn.path = "lan";
+    } else if (
+      conn.path === "lan" &&
+      !conn.transport.host.trim() &&
+      conn.transport.relayUrl
+    ) {
+      // No LAN host yet — go straight to the relay room.
+      conn.path = "relay";
+    }
+
     let url: string;
     try {
       url = resolveWsUrl(
         conn.transport,
         this.local.deviceId,
         conn.peer.deviceId,
+        conn.path,
       );
     } catch (e) {
+      // LAN host missing: flip to relay once if allowed.
+      if (conn.path === "lan" && conn.transport.mode === "lan") {
+        conn.path = "relay";
+        this.handlers.onLog(`${conn.peer.name}: ${String(e)} — trying relay`);
+        this.openConn(conn);
+        return;
+      }
       this.handlers.onLog(`${conn.peer.name}: ${String(e)}`);
       return;
     }
 
-    this.handlers.onLog(`${conn.peer.name}: connecting ${url}`);
+    this.handlers.onLog(`${conn.peer.name}: connecting ${conn.path} ${url}`);
     const ws = new WebSocket(url);
     conn.ws = ws;
+    conn.ready = false;
 
     ws.onopen = () => {
       conn.reconnectAttempts = 0;
-      this.handlers.onStatus(
-        `connected (${conn.transport.mode}) · ${conn.peer.name}`,
-      );
-      // Identify this socket straight away, so the desktop can route replies
-      // to the selected device instead of whichever connected last.
-      try {
-        this.sendFrameTo(
-          conn.peer.deviceId,
-          createMessageBody(
-            this.local.deviceId,
-            { type: "ping", ts: Date.now() },
-            conn.peer.deviceId,
-          ),
-        );
-      } catch {
-        /* socket raced closed */
+      if (conn.path === "relay") {
+        try {
+          const hello = buildRelayHello(this.local, conn.peer.deviceId);
+          ws.send(JSON.stringify(hello));
+          this.handlers.onLog(`${conn.peer.name}: relay hello sent`);
+        } catch (e) {
+          this.handlers.onLog(
+            `${conn.peer.name}: relay hello failed: ${String(e)}`,
+          );
+          try {
+            ws.close();
+          } catch {
+            /* ignore */
+          }
+        }
+        return;
       }
-      void this.handlers.onPeerOnline?.(conn.peer.deviceId);
+      this.markConnReady(conn);
     };
     ws.onmessage = (event) => {
       const raw = typeof event.data === "string" ? event.data : "";
+      if (conn.path === "relay" && !conn.ready) {
+        const err = parseRelayError(raw);
+        if (err) {
+          this.handlers.onRelayError?.(err.error);
+          this.handlers.onLog(`${conn.peer.name}: relay ${err.error}`);
+          return;
+        }
+        try {
+          const parsed = JSON.parse(raw) as { ok?: string };
+          if (parsed.ok === "hello") {
+            this.markConnReady(conn);
+            return;
+          }
+        } catch {
+          /* sealed frame before hello — ignore */
+        }
+        return;
+      }
+      const err = parseRelayError(raw);
+      if (err) {
+        this.handlers.onRelayError?.(err.error);
+        this.handlers.onLog(`${conn.peer.name}: relay ${err.error}`);
+        return;
+      }
       void this.handleIncomingRaw(raw, conn.peer.deviceId);
     };
     ws.onerror = () => {
       this.handlers.onLog(`${conn.peer.name}: socket error`);
     };
     ws.onclose = () => {
+      const wasPath = conn.path;
       conn.ws = null;
+      conn.ready = false;
       this.handlers.onStatus(`disconnected · ${conn.peer.name}`);
+      // LAN died: fail over to relay quickly. Relay died: try LAN again.
+      if (conn.transport.mode === "lan") {
+        if (wasPath === "lan") {
+          conn.path = "relay";
+          conn.reconnectAttempts = 0;
+          this.handlers.onLog(
+            `${conn.peer.name}: LAN down — failing over to relay`,
+          );
+          this.scheduleReconnect(conn, 500);
+          return;
+        }
+        conn.path = "lan";
+      }
       this.scheduleReconnect(conn);
     };
+  }
+
+  private markConnReady(conn: PeerConn): void {
+    conn.ready = true;
+    this.handlers.onStatus(`connected (${conn.path}) · ${conn.peer.name}`);
+    try {
+      this.sendFrameTo(
+        conn.peer.deviceId,
+        createMessageBody(
+          this.local.deviceId,
+          { type: "ping", ts: Date.now() },
+          conn.peer.deviceId,
+        ),
+      );
+    } catch {
+      /* socket raced closed */
+    }
+    void this.handlers.onPeerOnline?.(conn.peer.deviceId);
   }
 
   /**
@@ -370,15 +514,17 @@ export class MobileSession {
    * battery, and gets the phone's socket rate-limited on mobile networks.
    * 2.5s → 5s → 10s … capped at 60s, reset on a successful open.
    */
-  private scheduleReconnect(conn: PeerConn): void {
+  private scheduleReconnect(conn: PeerConn, overrideMs?: number): void {
     if (conn.reconnectTimer) clearTimeout(conn.reconnectTimer);
     const attempt = conn.reconnectAttempts;
     conn.reconnectAttempts = Math.min(attempt + 1, RECONNECT_MAX_ATTEMPTS);
-    const delay = Math.min(RECONNECT_BASE_MS * 2 ** attempt, RECONNECT_MAX_MS);
+    const delay =
+      overrideMs ??
+      Math.min(RECONNECT_BASE_MS * 2 ** attempt, RECONNECT_MAX_MS);
     const label =
       delay >= 1000 ? `${(delay / 1000).toFixed(0)}s` : `${delay}ms`;
     this.handlers.onLog(
-      `${conn.peer.name}: reconnect in ${label} (attempt ${attempt + 1})`,
+      `${conn.peer.name}: reconnect in ${label} (attempt ${attempt + 1}, ${conn.path})`,
     );
     conn.reconnectTimer = setTimeout(() => this.openConn(conn), delay);
   }
@@ -583,13 +729,24 @@ export class MobileSession {
         }
         try {
           asm.addChunk(payload.index, payload.dataBase64);
+          const percent = Math.round(asm.progress * 100);
           if (payload.index % 8 === 0 || asm.isComplete()) {
-            this.handlers.onLog(
-              `file ${asm.name} ${Math.round(asm.progress * 100)}%`,
-            );
+            this.handlers.onLog(`file ${asm.name} ${percent}%`);
           }
+          this.handlers.onTransferProgress?.({
+            transferId: payload.transferId,
+            name: asm.name,
+            percent,
+            direction: "in",
+          });
         } catch (e) {
           this.handlers.onLog(`chunk error: ${String(e)}`);
+          this.handlers.onTransferFailed?.({
+            transferId: payload.transferId,
+            name: asm.name,
+            reason: String(e),
+            direction: "in",
+          });
         }
         break;
       }
@@ -612,6 +769,11 @@ export class MobileSession {
               body.from,
             );
             this.handlers.onLog(`clipboard image complete ${asm.name}`);
+            this.handlers.onTransferComplete?.({
+              transferId: payload.transferId,
+              name: asm.name,
+              direction: "in",
+            });
             break;
           }
           await this.handlers.onFileTransfer?.(
@@ -624,16 +786,34 @@ export class MobileSession {
             body.from,
           );
           this.handlers.onLog(`file complete ${asm.name}`);
+          this.handlers.onTransferComplete?.({
+            transferId: payload.transferId,
+            name: asm.name,
+            direction: "in",
+          });
         } catch (e) {
           this.handlers.onLog(`file done failed: ${String(e)}`);
+          this.handlers.onTransferFailed?.({
+            transferId: payload.transferId,
+            name: asm.name,
+            reason: String(e),
+            direction: "in",
+          });
         }
         break;
       }
       case "file_abort": {
+        const asm = this.assemblers.get(payload.transferId);
         this.assemblers.delete(payload.transferId);
         this.handlers.onLog(
           `file abort ${payload.transferId}${payload.reason ? `: ${payload.reason}` : ""}`,
         );
+        this.handlers.onTransferFailed?.({
+          transferId: payload.transferId,
+          name: asm?.name,
+          reason: payload.reason ?? "aborted",
+          direction: "in",
+        });
         break;
       }
       case "keyboard_text": {
@@ -696,7 +876,12 @@ export class MobileSession {
   /** Send to the active host only. */
   private sendFrame(body: MessageBody): void {
     const conn = this.activeConn();
-    if (!conn || !conn.ws || conn.ws.readyState !== WebSocket.OPEN) {
+    if (
+      !conn ||
+      !conn.ready ||
+      !conn.ws ||
+      conn.ws.readyState !== WebSocket.OPEN
+    ) {
       throw new Error("not connected");
     }
     const frame = encryptFrame(body, this.local, conn.keys);
@@ -706,7 +891,12 @@ export class MobileSession {
   /** Send to one specific host (no-op when it is offline). */
   private sendFrameTo(deviceId: string, body: MessageBody): boolean {
     const conn = this.conns.get(deviceId);
-    if (!conn || !conn.ws || conn.ws.readyState !== WebSocket.OPEN) {
+    if (
+      !conn ||
+      !conn.ready ||
+      !conn.ws ||
+      conn.ws.readyState !== WebSocket.OPEN
+    ) {
       return false;
     }
     const frame = encryptFrame(body, this.local, conn.keys);
@@ -718,7 +908,7 @@ export class MobileSession {
   private broadcastFrame(body: MessageBody): number {
     let sent = 0;
     for (const conn of this.conns.values()) {
-      if (conn.ws?.readyState === WebSocket.OPEN) {
+      if (conn.ready && conn.ws?.readyState === WebSocket.OPEN) {
         const frame = encryptFrame(body, this.local, conn.keys);
         conn.ws.send(serializeFrame(frame));
         sent += 1;
@@ -817,47 +1007,98 @@ export class MobileSession {
     }
     const transferId = bytesToHex(randomBytes(8));
     const totalChunks = chunkCountForSize(data.byteLength);
-    this.sendFrame(
-      fileOfferBody(
-        this.local.deviceId,
-        {
-          transferId,
-          name: file.name,
-          mimeType: file.mimeType,
-          size: data.byteLength,
-          totalChunks,
-          purpose: purpose === "clipboard" ? "clipboard" : undefined,
-          hash,
-        },
-        this.peer.deviceId,
-      ),
-    );
-    const iter = iterateFileChunks(data);
-    let step = iter.next();
-    while (!step.done) {
+    this.outboundAbort.delete(transferId);
+    this.outboundNames.set(transferId, file.name);
+    try {
       this.sendFrame(
-        fileChunkBody(
+        fileOfferBody(
           this.local.deviceId,
           {
             transferId,
-            index: step.value.index,
-            dataBase64: step.value.dataBase64,
+            name: file.name,
+            mimeType: file.mimeType,
+            size: data.byteLength,
+            totalChunks,
+            purpose: purpose === "clipboard" ? "clipboard" : undefined,
+            hash,
           },
           this.peer.deviceId,
         ),
       );
-      step = iter.next();
+      const iter = iterateFileChunks(data);
+      let step = iter.next();
+      let sent = 0;
+      while (!step.done) {
+        if (this.outboundAbort.has(transferId)) {
+          this.outboundAbort.delete(transferId);
+          this.sendFrame(
+            fileAbortBody(
+              this.local.deviceId,
+              { transferId, reason: "cancelled" },
+              this.peer.deviceId,
+            ),
+          );
+          this.handlers.onTransferFailed?.({
+            transferId,
+            name: file.name,
+            reason: "cancelled",
+            direction: "out",
+          });
+          throw new Error("transfer cancelled");
+        }
+        this.sendFrame(
+          fileChunkBody(
+            this.local.deviceId,
+            {
+              transferId,
+              index: step.value.index,
+              dataBase64: step.value.dataBase64,
+            },
+            this.peer.deviceId,
+          ),
+        );
+        sent += 1;
+        const percent = Math.round((sent / totalChunks) * 100);
+        if (sent % 8 === 0 || sent === totalChunks) {
+          this.handlers.onLog(`file ${file.name} ${percent}%`);
+        }
+        this.handlers.onTransferProgress?.({
+          transferId,
+          name: file.name,
+          percent,
+          direction: "out",
+        });
+        step = iter.next();
+      }
+      this.sendFrame(
+        fileDoneBody(
+          this.local.deviceId,
+          { transferId, sha256: step.value },
+          this.peer.deviceId,
+        ),
+      );
+      this.handlers.onLog(
+        `sent ${purpose === "clipboard" ? "clipboard image" : "file"} ${file.name} (${data.byteLength} B, ${totalChunks} chunks)`,
+      );
+      this.handlers.onTransferComplete?.({
+        transferId,
+        name: file.name,
+        direction: "out",
+      });
+    } catch (e) {
+      if (!(e instanceof Error && e.message === "transfer cancelled")) {
+        this.handlers.onTransferFailed?.({
+          transferId,
+          name: file.name,
+          reason: e instanceof Error ? e.message : String(e),
+          direction: "out",
+        });
+      }
+      throw e;
+    } finally {
+      this.outboundNames.delete(transferId);
+      this.outboundAbort.delete(transferId);
     }
-    this.sendFrame(
-      fileDoneBody(
-        this.local.deviceId,
-        { transferId, sha256: step.value },
-        this.peer.deviceId,
-      ),
-    );
-    this.handlers.onLog(
-      `sent ${purpose === "clipboard" ? "clipboard image" : "file"} ${file.name} (${data.byteLength} B, ${totalChunks} chunks)`,
-    );
   }
 
   /** Mirrored notifications are interesting to every host. */
@@ -919,8 +1160,12 @@ export class MobileSession {
   }
 
   abortTransfer(transferId: string, reason?: string): void {
-    if (!this.peer) return;
     this.assemblers.delete(transferId);
+    if (this.outboundNames.has(transferId)) {
+      this.outboundAbort.add(transferId);
+      return;
+    }
+    if (!this.peer) return;
     try {
       this.sendFrame(
         fileAbortBody(
@@ -932,6 +1177,11 @@ export class MobileSession {
     } catch {
       /* ignore */
     }
+    this.handlers.onTransferFailed?.({
+      transferId,
+      reason: reason ?? "aborted",
+      direction: "in",
+    });
   }
 
   /** Notes are shared state: every host gets its own encrypted copy. */

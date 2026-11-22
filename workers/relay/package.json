@@ -8,6 +8,9 @@
     "check": "bun check",
     "test": "bun test"
   },
+  "dependencies": {
+    "@involvex/protocol": "workspace:*"
+  },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20260702.1",
     "typescript": "^5.7.3",

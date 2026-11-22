@@ -318,6 +318,41 @@ describe("MobileSession multi-host sockets", () => {
     });
   });
 
+  test("LAN close fails over to the relay room", async () => {
+    const MobileSession = await loadSession();
+    const logs: string[] = [];
+    const phone = generateDeviceKeys();
+    const session = new MobileSession(stored(phone, "Phone"), {
+      onShareUrl: () => {},
+      onClipboard: () => {},
+      onStatus: () => {},
+      onLog: (line) => logs.push(line),
+    });
+    const a = generateDeviceKeys();
+    session.setPeers([peer(a, "Desk", "192.168.1.10")], lanTransport);
+    session.connectAll();
+    await flush();
+    expect(sockets).toHaveLength(1);
+    expect(sockets[0]?.url).toBe("ws://192.168.1.10:17391");
+    expect(session.peerPath(a.deviceId)).toBe("lan");
+
+    const lan = sockets[0];
+    if (!lan) throw new Error("expected lan socket");
+    lan.readyState = 3;
+    lan.onclose?.({});
+    await flush();
+    // Backoff override is 500ms — advance by calling open via timer flush.
+    await new Promise((r) => setTimeout(r, 600));
+    await flush();
+
+    expect(sockets.length).toBeGreaterThanOrEqual(2);
+    const relay = sockets[sockets.length - 1];
+    expect(relay?.url).toContain("wss://relay.test/ws");
+    expect(relay?.url).toContain(`self=${encodeURIComponent(phone.deviceId)}`);
+    expect(logs.some((l) => l.includes("failing over to relay"))).toBe(true);
+    session.disconnect();
+  });
+
   test("connect({ pairing: true }) sends a pair request on open", async () => {
     const MobileSession = await loadSession();
     const logs: string[] = [];
