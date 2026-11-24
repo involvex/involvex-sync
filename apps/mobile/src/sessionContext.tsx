@@ -51,6 +51,7 @@ import {
 } from "../modules/invx-ime/src";
 import {
   addFolderTickListener,
+  didKeepaliveTimeout,
   isKeepaliveRunning,
   setFolderWatch,
   startKeepalive,
@@ -1842,6 +1843,22 @@ export function SessionProvider({ children }: { children: ReactNode }) {
         void getSharedFiles().then((files) => {
           if (files.length) setPendingFiles(files);
         });
+        // Android 15 stops dataSync FGS after ~6h background; bringing the
+        // app forward resets the quota — restart keepalive if still connected.
+        if (connectedRef.current) {
+          void (async () => {
+            const [running, timedOut] = await Promise.all([
+              isKeepaliveRunning(),
+              didKeepaliveTimeout(),
+            ]);
+            if (!running || timedOut) {
+              const label = mode === "lan" ? `LAN ${host}:${port}` : mode;
+              await startKeepalive("involvex Sync", label);
+              if (timedOut)
+                log("keepalive restarted after Android dataSync timeout");
+            }
+          })();
+        }
         if (
           appSettingsRef.current.folderSyncEnabled &&
           appSettingsRef.current.folderSyncUri.trim() &&

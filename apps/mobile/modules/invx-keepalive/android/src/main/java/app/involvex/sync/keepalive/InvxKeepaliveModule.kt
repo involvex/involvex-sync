@@ -34,16 +34,26 @@ class InvxKeepaliveModule : Module() {
         promise.reject("NO_CONTEXT", "React context missing", null)
         return@AsyncFunction
       }
-      val intent = Intent(context, InvxForegroundService::class.java).apply {
-        putExtra(InvxForegroundService.EXTRA_TITLE, title)
-        putExtra(InvxForegroundService.EXTRA_BODY, body)
+      try {
+        val intent = Intent(context, InvxForegroundService::class.java).apply {
+          putExtra(InvxForegroundService.EXTRA_TITLE, title)
+          putExtra(InvxForegroundService.EXTRA_BODY, body)
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+          context.startForegroundService(intent)
+        } else {
+          context.startService(intent)
+        }
+        promise.resolve(null)
+      } catch (e: Exception) {
+        // Android 15+: dataSync quota exhausted until the user brings the app
+        // to the foreground (resets the 6h window).
+        promise.reject(
+          "FGS_START_FAILED",
+          e.message ?: "Could not start keepalive foreground service",
+          e,
+        )
       }
-      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-        context.startForegroundService(intent)
-      } else {
-        context.startService(intent)
-      }
-      promise.resolve(null)
     }
 
     AsyncFunction("stop") { promise: Promise ->
@@ -54,11 +64,17 @@ class InvxKeepaliveModule : Module() {
       }
       InvxKeepaliveBridge.setFolderWatch(false)
       context.stopService(Intent(context, InvxForegroundService::class.java))
+      InvxForegroundService.isRunning = false
+      InvxForegroundService.timedOut = false
       promise.resolve(null)
     }
 
     AsyncFunction("isRunning") { promise: Promise ->
       promise.resolve(InvxForegroundService.isRunning)
+    }
+
+    AsyncFunction("didTimeout") { promise: Promise ->
+      promise.resolve(InvxForegroundService.timedOut)
     }
 
     AsyncFunction("setFolderWatch") { enabled: Boolean, promise: Promise ->

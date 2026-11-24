@@ -6,6 +6,8 @@ type InvxKeepaliveNative = {
   start(title: string, body: string): Promise<void>;
   stop(): Promise<void>;
   isRunning(): Promise<boolean>;
+  /** True after Android 15 dataSync FGS onTimeout until the next start. */
+  didTimeout?(): Promise<boolean>;
   setFolderWatch(enabled: boolean): Promise<void>;
   isFolderWatchEnabled(): Promise<boolean>;
   addListener(event: "onFolderTick", listener: () => void): Subscription;
@@ -24,7 +26,12 @@ export async function startKeepalive(
   body = "Connected — waiting for links",
 ): Promise<void> {
   if (!native) return;
-  await native.start(title, body);
+  try {
+    await native.start(title, body);
+  } catch (e) {
+    // Quota exhausted / OEM denial — Sync still works in the foreground.
+    console.warn("[invx-keepalive] start failed:", e);
+  }
 }
 
 export async function stopKeepalive(): Promise<void> {
@@ -35,6 +42,11 @@ export async function stopKeepalive(): Promise<void> {
 export async function isKeepaliveRunning(): Promise<boolean> {
   if (!native) return false;
   return native.isRunning();
+}
+
+export async function didKeepaliveTimeout(): Promise<boolean> {
+  if (!native?.didTimeout) return false;
+  return native.didTimeout();
 }
 
 /** Enable/disable 2s folder-sync ticks from the foreground service. */
