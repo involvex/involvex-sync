@@ -118,10 +118,12 @@ bun run oauth:deploy:prod
 
 - **Serial targeting is mandatory.** Both `adb_screencap` and `run_adb_shell` accept `serial` and pass `-s <serial>`; with several devices (phone + emulator) an omitted serial fails with "more than one device". `adb_devices` returns the raw `adb devices -l` text and `apps/desktop/src/services/adbDevices.ts` does all parsing/serial selection (`adbDevices.test.ts` covers formats and precedence).
 - **Never read stdout after exit.** Rust drains stdout/stderr on reader threads spawned right after `spawn()` — a multi-MB screencap PNG fills the OS pipe, adb blocks on write, and a parent that only reads after exit deadlocks (this was the original "screenshot always times out" bug).
+- **Clipboard wants RGBA, not a path.** `adb_screencap` writes a temp PNG and `clipboard_set_image_from_path` / Rust `arboard` put decoded pixels on the OS clipboard. Never pass a filesystem path to `@tauri-apps/plugin-clipboard-manager` `writeImage` (that yields "Expected RGBA image data, found a file path"). Screenshot is ADB-only; mirror uses scrcpy.
 - **Saved serials are hints, not identities.** `settings.adbSerial` guides selection but is never trusted: mDNS/TLS serials change on reconnect, so an unusable/absent hint must fall through to auto-detect (`resolveSerial` sets `staleSetting`) rather than error out.
 - **Report real adb errors.** Map failures to actionable text via `describeAdbError` (missing binary, timeout, unauthorized, offline, not-a-PNG) — never a generic "Screenshot failed".
 - **Do not run `adb` against a physical device during development.** `adb devices -l` reads are fine for diagnostics; installs, shell commands, and screencaps are verified by the user on the device.
 - **Mirror stays local.** `start_scrcpy` / `stop_scrcpy` / `open_escrcpy` in `shell.rs` spawn scrcpy or Escrcpy with a validated serial; never stream H.264 over the relay. Validate serials with the same allowlist as Escrcpy (`^[\w.:[\]-]+$`). Argv builders and tests live in `apps/desktop/src/services/scrcpy.ts`.
+- **InVx Termux RUN_COMMAND.** Package id is `com.involvex.termux_app` but the service FQCN is `com.invapp.app.RunCommandService` (`namespace "com.invapp"`). Deliver results with a mutable broadcast PendingIntent + ResultReceiver (not `getService` — Android 12+ drops background starts from Termux). API companion: `com.involvex.termux_app.api` (`namespace com.invapp.api`).
 
 ### Multi-host pairing (full mesh)
 

@@ -2030,6 +2030,8 @@ dependencies = [
  "num-traits",
  "png",
  "tiff",
+ "zune-core",
+ "zune-jpeg",
 ]
 
 [[package]]
@@ -2088,9 +2090,11 @@ dependencies = [
 name = "involvex-sync-desktop"
 version = "0.1.0"
 dependencies = [
+ "arboard",
  "base64 0.22.1",
  "dirs 6.0.0",
  "futures-util",
+ "image",
  "keyring",
  "local-ip-address",
  "mdns-sd",

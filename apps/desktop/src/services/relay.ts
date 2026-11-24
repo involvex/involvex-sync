@@ -8,7 +8,12 @@ import {
 
 const DEFAULT_RELAY = "wss://sync.involvex.workers.dev/ws";
 const RECONNECT_BASE_MS = 2_500;
+/** Soft cap while still probing frequently. */
 const RECONNECT_MAX_MS = 60_000;
+/** After many failed handshakes, wait longer between tries. */
+const RECONNECT_HARD_MAX_MS = 5 * 60_000;
+/** Attempts after which we quiet the status spam and stretch the backoff. */
+const QUIET_AFTER_ATTEMPTS = 8;
 
 export type RelayHandlers = {
   onMessage: (raw: string) => void;
@@ -65,6 +70,15 @@ export class RelayClient {
     this.openSocket();
   }
 
+  private quiet(): boolean {
+    return this.reconnectAttempts >= QUIET_AFTER_ATTEMPTS;
+  }
+
+  private status(line: string, force = false): void {
+    if (!force && this.quiet()) return;
+    this.handlers.onStatus(line);
+  }
+
   private openSocket(): void {
     if (this.ws) {
       this.ws.onclose = null;
@@ -75,7 +89,7 @@ export class RelayClient {
       this.ws = null;
     }
     this.helloOk = false;
-    this.handlers.onStatus(`relay connecting ${this.url}`);
+    this.status(`relay connecting ${this.url}`);
     const ws = new WebSocket(this.url);
     this.ws = ws;
     ws.onopen = () => {
@@ -118,23 +132,25 @@ export class RelayClient {
       }
       this.handlers.onMessage(raw);
     };
-    ws.onclose = () => {
+    ws.onclose = (ev) => {
       this.ws = null;
       this.helloOk = false;
-      this.handlers.onStatus("relay disconnected");
+      const code = typeof ev?.code === "number" ? ev.code : 0;
+      const reason = typeof ev?.reason === "string" ? ev.reason.trim() : "";
+      // One close line (with code/reason) instead of error + disconnected.
+      // After many failures only emit when we also schedule a visible reconnect.
+      if (!this.quiet()) {
+        this.handlers.onStatus(
+          reason
+            ? `relay closed ${code}: ${reason}`
+            : `relay disconnected (${code})`,
+        );
+      }
       this.scheduleReconnect();
     };
     ws.onerror = () => {
-      this.handlers.onStatus("relay error");
-      // onclose usually follows; if the socket never opened, close it so we
-      // still enter the reconnect path.
-      if (this.ws === ws && ws.readyState !== WebSocket.OPEN) {
-        try {
-          ws.close();
-        } catch {
-          /* ignore */
-        }
-      }
+      // Do not call ws.close() here — that aborts a CONNECTING handshake and
+      // prevents onopen. onclose follows for real failures.
     };
   }
 
@@ -143,15 +159,21 @@ export class RelayClient {
     if (this.reconnectTimer) return;
     const attempt = this.reconnectAttempts;
     this.reconnectAttempts = attempt + 1;
-    const delay = Math.min(
-      RECONNECT_BASE_MS * 2 ** Math.min(attempt, 8),
-      RECONNECT_MAX_MS,
-    );
+    const exp = Math.min(attempt, this.quiet() ? 12 : 8);
+    const softCap = this.quiet() ? RECONNECT_HARD_MAX_MS : RECONNECT_MAX_MS;
+    const delay = Math.min(RECONNECT_BASE_MS * 2 ** exp, softCap);
     const label =
       delay >= 1000 ? `${(delay / 1000).toFixed(0)}s` : `${delay}ms`;
-    this.handlers.onStatus(
-      `relay reconnect in ${label} (attempt ${attempt + 1})`,
-    );
+    // Always announce the wait after quieting — that is the single repeating line.
+    const announce =
+      !this.quiet() ||
+      this.reconnectAttempts === QUIET_AFTER_ATTEMPTS ||
+      this.reconnectAttempts % 5 === 0;
+    if (announce) {
+      this.handlers.onStatus(
+        `relay reconnect in ${label} (attempt ${attempt + 1})`,
+      );
+    }
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
       if (!this.wanted) return;

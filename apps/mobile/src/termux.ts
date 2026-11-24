@@ -13,14 +13,26 @@
 
 export const TERMUX_PACKAGE = "com.involvex.termux_app";
 
+/**
+ * InVx Termux:API companion app. `namespace` is `com.invapp.api`;
+ * `applicationId` is this value.
+ */
+export const TERMUX_API_PACKAGE = `${TERMUX_PACKAGE}.api`;
+
 export const TERMUX_RUN_COMMAND_PERMISSION =
   `${TERMUX_PACKAGE}.permission.RUN_COMMAND` as const;
 
 export const TERMUX_RUN_COMMAND_ACTION =
   `${TERMUX_PACKAGE}.RUN_COMMAND` as const;
 
+/**
+ * Java FQCN for RunCommandService. InVx Termux uses `namespace "com.invapp"`
+ * with `applicationId "com.involvex.termux_app"`, so the class is under
+ * `com.invapp.app` — not under the applicationId (see TermuxConstants /
+ * termux-terminal-widget CommandRunner).
+ */
 export const TERMUX_RUN_COMMAND_SERVICE =
-  `${TERMUX_PACKAGE}.app.RunCommandService` as const;
+  "com.invapp.app.RunCommandService" as const;
 
 /**
  * Absolute Termux paths (InVx data dir). Prefer these over `$PREFIX` —
@@ -45,7 +57,8 @@ export const TermuxExtras = {
 
 export const TERMUX_SETUP_HINT =
   "Termux needs allow-external-apps=true in ~/.termux/termux.properties. " +
-  "termux-toast / termux-open-url need: pkg install termux-api";
+  `termux-toast / termux-open-url need Termux:API (${TERMUX_API_PACKAGE}) ` +
+  "+ pkg install termux-api";
 
 export type TermuxAllowedCommand = "open-url" | "clipboard-set" | "shell";
 
@@ -61,6 +74,11 @@ export type TermuxRequest =
   | { command: "open-url"; url: string }
   | { command: "clipboard-set"; text: string }
   | { command: "shell"; script: string };
+
+/** Commands that call into the Termux:API companion APK. */
+export function termuxRequestNeedsApi(req: TermuxRequest): boolean {
+  return req.command === "open-url" || req.command === "clipboard-set";
+}
 
 export type TermuxRunCommandSpec = {
   /**

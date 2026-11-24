@@ -4,8 +4,12 @@ import android.app.PendingIntent
 import android.content.ComponentName
 import android.content.Intent
 import android.content.pm.PackageManager
-import android.net.Uri
 import android.os.Build
+import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
+import android.os.Parcel
+import android.os.ResultReceiver
 import expo.modules.kotlin.exception.Exceptions
 import expo.modules.kotlin.modules.Module
 import expo.modules.kotlin.modules.ModuleDefinition
@@ -57,12 +61,37 @@ class InvxTermuxModule : Module() {
       val requestId = UUID.randomUUID().toString()
       InvxTermuxBridge.beginWait(requestId)
 
-      // getService + ONE_SHOT matches InVx termux-terminal-widget CommandRunner
-      // (BroadcastReceiver PendingIntents often never deliver across packages).
+      // Same pattern as InVx termux-terminal-widget CommandRunner: parcel a
+      // ResultReceiver into the PendingIntent so Termux can deliver results
+      // across packages. Use getBroadcast — getService is dropped by Android
+      // 12+ when Termux (another UID) tries to start our background Service.
+      val resultReceiver =
+        object : ResultReceiver(Handler(Looper.getMainLooper())) {
+          override fun onReceiveResult(
+            resultCode: Int,
+            resultData: Bundle?,
+          ) {
+            val parsed =
+              if (resultData != null) {
+                InvxTermuxResultReceiver.parseResultBundle(resultData)
+              } else {
+                mapOf(
+                  "ok" to false,
+                  "exitCode" to -1,
+                  "stdout" to "",
+                  "stderr" to "",
+                  "errmsg" to "empty Termux result bundle",
+                )
+              }
+            InvxTermuxBridge.complete(requestId, parsed)
+          }
+        }
+
       val resultIntent =
-        Intent(context, InvxTermuxResultService::class.java).apply {
-          data = Uri.parse("invx-termux://result/$requestId")
-          putExtra(InvxTermuxResultService.EXTRA_REQUEST_ID, requestId)
+        Intent(context, InvxTermuxResultReceiver::class.java).apply {
+          setAction("${context.packageName}${InvxTermuxResultReceiver.ACTION_SUFFIX}")
+          putExtra(InvxTermuxResultReceiver.EXTRA_REQUEST_ID, requestId)
+          putExtra(Intent.EXTRA_RESULT_RECEIVER, receiverForSending(resultReceiver))
         }
 
       val piFlags =
@@ -73,7 +102,7 @@ class InvxTermuxModule : Module() {
         }
 
       val pendingIntent =
-        PendingIntent.getService(
+        PendingIntent.getBroadcast(
           context,
           requestId.hashCode(),
           resultIntent,
@@ -130,7 +159,8 @@ class InvxTermuxModule : Module() {
             "stderr" to "",
             "errmsg" to
               "Could not start Termux RunCommandService: ${e.message}. " +
-                "Check allow-external-apps=true in ~/.termux/termux.properties",
+                "Check allow-external-apps=true in ~/.termux/termux.properties " +
+                "and that serviceClass is com.invapp.app.RunCommandService",
             "termuxPackage" to packageName,
             "commandPath" to commandPath,
           ),
@@ -138,7 +168,7 @@ class InvxTermuxModule : Module() {
       }
 
       // Never block the Expo/JS thread — wait on a worker so the result
-      // Service can be delivered on the main looper.
+      // BroadcastReceiver / ResultReceiver can run on the main looper.
       val future =
         waitExecutor.submit<Map<String, Any?>> {
           val result = InvxTermuxBridge.await(requestId, timeoutMs).toMutableMap()
@@ -228,6 +258,21 @@ class InvxTermuxModule : Module() {
           home + commandPath.removePrefix("~")
         commandPath == "~" -> home
         else -> commandPath
+      }
+    }
+
+    /**
+     * Make a ResultReceiver sendable across packages (Termux → Sync).
+     * See https://stackoverflow.com/a/12183036 and termux-terminal-widget.
+     */
+    fun receiverForSending(original: ResultReceiver): ResultReceiver {
+      val parcel = Parcel.obtain()
+      try {
+        original.writeToParcel(parcel, 0)
+        parcel.setDataPosition(0)
+        return ResultReceiver.CREATOR.createFromParcel(parcel)
+      } finally {
+        parcel.recycle()
       }
     }
   }

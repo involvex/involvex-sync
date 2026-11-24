@@ -1,4 +1,5 @@
 mod bootlog;
+mod clipboard_img;
 mod control;
 mod firewall;
 mod folder_sync;
@@ -337,7 +338,16 @@ fn adb_screencap(
     timeout_ms: Option<u64>,
     serial: Option<String>,
 ) -> Result<String, String> {
-    shell::adb_screencap_png(timeout_ms.unwrap_or(30_000), serial.as_deref())
+    let path = shell::adb_screencap_png(timeout_ms.unwrap_or(30_000), serial.as_deref())?;
+    // Put the PNG on the OS clipboard as RGBA — plugin writeImage rejects paths.
+    clipboard_img::set_clipboard_image_from_path(&path)?;
+    Ok(path)
+}
+
+/// Decode a local image file (PNG/JPEG) onto the OS clipboard as RGBA pixels.
+#[tauri::command]
+fn clipboard_set_image_from_path(path: String) -> Result<(), String> {
+    clipboard_img::set_clipboard_image_from_path(&path)
 }
 
 #[tauri::command]
@@ -552,6 +562,7 @@ pub fn run() {
             run_gws,
             adb_devices,
             adb_screencap,
+            clipboard_set_image_from_path,
             start_scrcpy,
             stop_scrcpy,
             scrcpy_status,
