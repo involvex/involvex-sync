@@ -674,9 +674,10 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       },
       onTermuxOpenUrl: async (url) => {
         try {
-          const result = await startTermuxRunCommand(
-            allowlistedRunSpec({ command: "open-url", url }),
-          );
+          const req = { command: "open-url" as const, url };
+          const result = await startTermuxRunCommand(allowlistedRunSpec(req), {
+            request: req,
+          });
           log(
             result.ok
               ? `termux open-url ${url}`
@@ -695,9 +696,10 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       },
       onTermuxClipboardSet: async (text) => {
         try {
-          const result = await startTermuxRunCommand(
-            allowlistedRunSpec({ command: "clipboard-set", text }),
-          );
+          const req = { command: "clipboard-set" as const, text };
+          const result = await startTermuxRunCommand(allowlistedRunSpec(req), {
+            request: req,
+          });
           if (result.ok) {
             await pushHistory(text, "in");
             log("termux clipboard-set");

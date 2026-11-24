@@ -16,9 +16,13 @@ import { enable as enableAutostart } from "@tauri-apps/plugin-autostart";
 import {
   readImage,
   readText,
-  writeImage,
   writeText,
 } from "@tauri-apps/plugin-clipboard-manager";
+
+/** Put a local PNG/JPEG file on the OS clipboard (Rust decodes to RGBA). */
+async function clipboardSetImageFromPath(path: string): Promise<void> {
+  await invoke("clipboard_set_image_from_path", { path });
+}
 import {
   isPermissionGranted,
   requestPermission,
@@ -259,7 +263,10 @@ export default function App() {
   const [qrDataUrl, setQrDataUrl] = useState<string>("");
   const [pairPaste, setPairPaste] = useState("");
   const [sendUrl, setSendUrl] = useState("");
-  const [logs, setLogs] = useState<string[]>([]);
+  const [logs, setLogs] = useState<{ id: number; text: string }[]>([]);
+  const logSeqRef = useRef(0);
+  const secretUpsertBufRef = useRef<StoredSecret[]>([]);
+  const secretUpsertTimerRef = useRef<number | null>(null);
   const [firewallMsg, setFirewallMsg] = useState<string>("");
   const [relayStatus, setRelayStatus] = useState<string>("off");
   const [relayEnabled, setRelayEnabled] = useState(
@@ -371,9 +378,33 @@ export default function App() {
   }, [settings.theme]);
 
   const log = useCallback((line: string) => {
-    const stamp = new Date().toLocaleTimeString();
-    setLogs((prev) => [`[${stamp}] ${line}`, ...prev].slice(0, 80));
+    const stamp = new Date().toLocaleTimeString(undefined, {
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+      hourCycle: "h23",
+    });
+    const id = ++logSeqRef.current;
+    setLogs((prev) =>
+      [{ id, text: `[${stamp}] ${line}` }, ...prev].slice(0, 80),
+    );
   }, []);
+
+  const flushSecretUpserts = useCallback(() => {
+    secretUpsertTimerRef.current = null;
+    const batch = secretUpsertBufRef.current.splice(0);
+    if (batch.length === 0) return;
+    let next: StoredSecret[] = [];
+    for (const secret of batch) {
+      next = applyPeerSecretUpsert(secret);
+    }
+    setSecrets(next);
+    log(
+      batch.length === 1
+        ? "secret synced from phone"
+        : `secrets synced (${batch.length})`,
+    );
+  }, [log]);
 
   const toast = useCallback((text: string, kind: Toast["kind"] = "info") => {
     const id = ++toastSeq;
@@ -437,7 +468,7 @@ export default function App() {
             directory: null,
             relativePath: null,
           });
-          await writeImage(path);
+          await clipboardSetImageFromPath(path);
           pushHistory("[Image]", "in", { kind: "image", imagePath: path });
           log("clipboard image updated from peer");
         } catch (e) {
@@ -651,17 +682,19 @@ export default function App() {
         log("note deleted from phone");
       },
       onSecretUpsert: (secret) => {
-        setSecrets(
-          applyPeerSecretUpsert({
-            id: secret.id,
-            label: secret.meta.label,
-            kind: secret.meta.kind,
-            updatedAt: secret.updatedAt,
-            nonce: secret.nonce,
-            ciphertext: secret.ciphertext,
-          }),
+        secretUpsertBufRef.current.push({
+          id: secret.id,
+          label: secret.meta.label,
+          kind: secret.meta.kind,
+          updatedAt: secret.updatedAt,
+          nonce: secret.nonce,
+          ciphertext: secret.ciphertext,
+        });
+        if (secretUpsertTimerRef.current != null) return;
+        secretUpsertTimerRef.current = window.setTimeout(
+          () => flushSecretUpserts(),
+          50,
         );
-        log("secret synced from phone");
       },
       onSecretDelete: (secret) => {
         setSecrets(applyPeerSecretDelete(secret.id, secret.updatedAt));
@@ -677,7 +710,14 @@ export default function App() {
       },
       onLog: log,
     });
-  }, [identity, log, notifyPairRequest, pushHistory, toast]);
+  }, [
+    identity,
+    log,
+    flushSecretUpserts,
+    notifyPairRequest,
+    pushHistory,
+    toast,
+  ]);
 
   useEffect(() => {
     sessionRef.current = session;
@@ -2412,7 +2452,7 @@ export default function App() {
         timeoutMs: 20_000,
         serial: target.serial,
       });
-      await writeImage(path);
+      // adb_screencap already puts the PNG on the clipboard as RGBA.
       log(`screenshot → clipboard (${path})`);
       toast("Screenshot copied to clipboard", "ok");
       const cfg = settingsRef.current;
@@ -2581,7 +2621,7 @@ export default function App() {
         timeoutMs: 20_000,
         serial: target.serial,
       });
-      await writeImage(path);
+      // adb_screencap already puts the PNG on the clipboard as RGBA.
       const dataBase64 = await invoke<string>("read_file_base64", {
         path,
       });
@@ -3654,7 +3694,7 @@ export default function App() {
                       className="linkish"
                       onClick={() => {
                         if (entry.kind === "image" && entry.imagePath) {
-                          void writeImage(entry.imagePath);
+                          void clipboardSetImageFromPath(entry.imagePath);
                         } else {
                           void writeText(entry.text);
                         }
@@ -4009,9 +4049,9 @@ export default function App() {
         <details className="card log" open={logs.length > 0}>
           <summary>Activity ({logs.length})</summary>
           <ul>
-            {logs.map((line) => (
-              <li key={line} className="mono small">
-                {line}
+            {logs.map((entry) => (
+              <li key={entry.id} className="mono small">
+                {entry.text}
               </li>
             ))}
           </ul>

@@ -365,8 +365,9 @@ export function SettingsScreen() {
         <Text style={styles.muted}>
           Required in Termux: set allow-external-apps=true in
           ~/.termux/termux.properties, then restart Termux. For termux-toast /
-          termux-open-url run: pkg install termux-api. Test Termux should show
-          real stdout/exit — not just “started”.
+          termux-open-url install Termux:API (com.involvex.termux_app.api) and
+          pkg install termux-api. Test Termux should show real stdout/exit — not
+          just “started”.
         </Text>
         <Pressable style={styles.linkBtn} onPress={() => void testTermux()}>
           <Text style={styles.linkText}>Test Termux RUN_COMMAND</Text>

@@ -1,11 +1,14 @@
 import { PermissionsAndroid, Platform } from "react-native";
 import { requireNativeModule } from "expo";
 import {
+  TERMUX_API_PACKAGE,
   TERMUX_PACKAGE,
   TERMUX_RUN_COMMAND_ACTION,
   TERMUX_RUN_COMMAND_PERMISSION,
   TERMUX_RUN_COMMAND_SERVICE,
   TERMUX_SETUP_HINT,
+  termuxRequestNeedsApi,
+  type TermuxRequest,
   type TermuxRunCommandSpec,
   type TermuxRunResult,
 } from "../../../src/termux";
@@ -34,7 +37,7 @@ try {
   native = null;
 }
 
-export { TERMUX_PACKAGE, TERMUX_SETUP_HINT };
+export { TERMUX_API_PACKAGE, TERMUX_PACKAGE, TERMUX_SETUP_HINT };
 export type { TermuxRunResult };
 
 function normalizeResult(raw: TermuxRunResult | boolean): TermuxRunResult {
@@ -65,6 +68,11 @@ export async function isTermuxInstalled(): Promise<boolean> {
   return native.isPackageInstalled(TERMUX_PACKAGE);
 }
 
+export async function isTermuxApiInstalled(): Promise<boolean> {
+  if (Platform.OS !== "android" || !native) return false;
+  return native.isPackageInstalled(TERMUX_API_PACKAGE);
+}
+
 export async function ensureTermuxRunCommandPermission(): Promise<boolean> {
   if (Platform.OS !== "android") return false;
   const granted = await PermissionsAndroid.check(
@@ -84,8 +92,14 @@ export async function ensureTermuxRunCommandPermission(): Promise<boolean> {
   return result === PermissionsAndroid.RESULTS.GRANTED;
 }
 
+/**
+ * Run an allowlisted Termux command. Pass `needsApi` (or a TermuxRequest)
+ * when the command uses termux-toast / termux-open-url / clipboard-set so we
+ * fail fast if Termux:API is missing instead of waiting for the timeout.
+ */
 export async function startTermuxRunCommand(
   spec: TermuxRunCommandSpec,
+  opts?: { needsApi?: boolean; request?: TermuxRequest },
 ): Promise<TermuxRunResult> {
   if (!native) {
     throw new Error("InvxTermux native module unavailable — rebuild the app");
@@ -94,6 +108,20 @@ export async function startTermuxRunCommand(
     throw new Error(
       `Termux not installed (${TERMUX_PACKAGE}). Install InVx Termux.`,
     );
+  }
+  const needsApi =
+    opts?.needsApi === true ||
+    (opts?.request != null && termuxRequestNeedsApi(opts.request)) ||
+    spec.commandPath.includes("termux-clipboard-set") ||
+    (spec.stdin?.includes("termux-open-url") ?? false);
+  if (needsApi && !(await isTermuxApiInstalled())) {
+    return {
+      ok: false,
+      exitCode: 1,
+      stdout: "",
+      stderr: `Termux:API not installed (${TERMUX_API_PACKAGE}). Install the API APK and pkg install termux-api.`,
+      errmsg: `missing ${TERMUX_API_PACKAGE}`,
+    };
   }
   const permitted = await ensureTermuxRunCommandPermission();
   if (!permitted) {

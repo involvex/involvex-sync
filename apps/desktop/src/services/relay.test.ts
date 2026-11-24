@@ -106,11 +106,56 @@ describe("RelayClient reconnect", () => {
     expect(statuses.some((s) => s === "relay connected")).toBe(true);
 
     first.readyState = 3;
-    first.onclose?.({});
+    first.onclose?.({ code: 1000, reason: "" });
     expect(statuses.some((s) => s.startsWith("relay reconnect in"))).toBe(true);
+    expect(statuses.some((s) => s.startsWith("relay disconnected"))).toBe(true);
 
     client.disconnect();
     expect(sockets).toHaveLength(1);
+  });
+
+  test("onerror does not abort a connecting socket", () => {
+    const statuses: string[] = [];
+    const local = generateDeviceKeys();
+    const peer = generateDeviceKeys();
+    const client = new RelayClient(local, peer.deviceId, {
+      onMessage: () => {},
+      onStatus: (s) => statuses.push(s),
+    });
+    client.connect();
+    const first = sockets[0];
+    if (!first) throw new Error("expected socket");
+    // Still CONNECTING — onerror must not close (that aborted handshakes).
+    first.onerror?.({});
+    expect(first.readyState).toBe(0);
+    expect(statuses.some((s) => s === "relay error")).toBe(false);
+    first.readyState = 1;
+    first.onopen?.({});
+    first.onmessage?.({ data: JSON.stringify({ ok: "hello" }) });
+    expect(client.isReady).toBe(true);
+    client.disconnect();
+  });
+
+  test("close status includes code and reason", () => {
+    const statuses: string[] = [];
+    const local = generateDeviceKeys();
+    const peer = generateDeviceKeys();
+    const client = new RelayClient(local, peer.deviceId, {
+      onMessage: () => {},
+      onStatus: (s) => statuses.push(s),
+    });
+    client.connect();
+    const first = sockets[0];
+    if (!first) throw new Error("expected socket");
+    first.readyState = 1;
+    first.onopen?.({});
+    first.onmessage?.({ data: JSON.stringify({ ok: "hello" }) });
+    first.readyState = 3;
+    first.onclose?.({ code: 1008, reason: "hello invalid" });
+    expect(statuses.some((s) => s === "relay closed 1008: hello invalid")).toBe(
+      true,
+    );
+    client.disconnect();
   });
 
   test("disconnect cancels further reconnects", () => {
