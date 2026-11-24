@@ -124,6 +124,7 @@ bun run oauth:deploy:prod
 - **Do not run `adb` against a physical device during development.** `adb devices -l` reads are fine for diagnostics; installs, shell commands, and screencaps are verified by the user on the device.
 - **Mirror stays local.** `start_scrcpy` / `stop_scrcpy` / `open_escrcpy` in `shell.rs` spawn scrcpy or Escrcpy with a validated serial; never stream H.264 over the relay. Validate serials with the same allowlist as Escrcpy (`^[\w.:[\]-]+$`). Argv builders and tests live in `apps/desktop/src/services/scrcpy.ts`.
 - **InVx Termux RUN_COMMAND.** Package id is `com.involvex.termux_app` but the service FQCN is `com.invapp.app.RunCommandService` (`namespace "com.invapp"`). Deliver results with a mutable broadcast PendingIntent + ResultReceiver (not `getService` — Android 12+ drops background starts from Termux). API companion: `com.involvex.termux_app.api` (`namespace com.invapp.api`).
+- **Android 15 dataSync FGS timeout.** `InvxForegroundService` is `foregroundServiceType=dataSync`. After ~6h background in 24h the system calls `onTimeout` — must `stopSelf()` within seconds or the app crashes with `ForegroundServiceDidNotStopInTimeException`. Restart keepalive when the app returns to the foreground (resets the quota).
 
 ### Multi-host pairing (full mesh)
 
