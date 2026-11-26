@@ -13,7 +13,8 @@
     "test": "bun test",
     "prebuild": "expo prebuild --platform android",
     "build": "expo run:android --variant release --no-bundler",
-    "build:apk": "cd android && gradlew.bat assembleRelease"
+    "build:apk": "cd android && gradlew.bat assembleRelease",
+    "verify": "expo install --check && bunx expo-doctor --verbose"
   },
   "dependencies": {
     "@involvex/protocol": "workspace:*",
