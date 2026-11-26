@@ -3,6 +3,8 @@ import {
   type DeviceType,
   type KeyboardKeyId,
   LoopGuard,
+  type ClipboardHistoryDeletePayload,
+  type ClipboardHistoryUpsertPayload,
   type MessageBody,
   type NoteDeletePayload,
   type NoteUpsertPayload,
@@ -21,6 +23,8 @@ import {
   buildPairReject,
   bytesToHex,
   chunkCountForSize,
+  clipboardHistoryDeleteBody,
+  clipboardHistoryUpsertBody,
   clipboardUpdateBody,
   decryptFrame,
   encryptFrame,
@@ -136,6 +140,14 @@ export type SessionHandlers = {
     from: string,
   ) => void | Promise<void>;
   onVaultKeyShare?: (keyHex: string, from: string) => void | Promise<void>;
+  onClipboardHistoryUpsert?: (
+    entry: ClipboardHistoryUpsertPayload,
+    from: string,
+  ) => void | Promise<void>;
+  onClipboardHistoryDelete?: (
+    entry: ClipboardHistoryDeletePayload,
+    from: string,
+  ) => void | Promise<void>;
   onRemoteCommand?: (
     request: RemoteCommandRequest,
     from: string,
@@ -793,6 +805,12 @@ export class SyncSession {
       case "vault_key_share":
         await this.handlers.onVaultKeyShare?.(payload.keyHex, body.from);
         break;
+      case "clipboard_history_upsert":
+        await this.handlers.onClipboardHistoryUpsert?.(payload, body.from);
+        break;
+      case "clipboard_history_delete":
+        await this.handlers.onClipboardHistoryDelete?.(payload, body.from);
+        break;
       default:
         this.handlers.onLog("drop: unknown payload");
     }
@@ -1287,6 +1305,53 @@ export class SyncSession {
     if (!peer) throw new Error(`host ${peerId} not paired`);
     const body = vaultKeyShareBody(this.local.deviceId, keyHex, peerId);
     if (!body) throw new Error("invalid vault key");
+    await this.sendEncryptedTo(peerId, peer, body);
+  }
+
+  async sendClipboardHistoryUpsert(entry: {
+    id: string;
+    text: string;
+    updatedAt: number;
+  }): Promise<void> {
+    if (!clipboardHistoryUpsertBody(this.local.deviceId, entry)) {
+      throw new Error("invalid clipboard history");
+    }
+    await this.fanOutShared((peerId) =>
+      clipboardHistoryUpsertBody(this.local.deviceId, entry, peerId),
+    );
+  }
+
+  async sendClipboardHistoryUpsertTo(
+    peerId: string,
+    entry: { id: string; text: string; updatedAt: number },
+  ): Promise<void> {
+    const peer = this.peerMap.get(peerId);
+    if (!peer) throw new Error(`host ${peerId} not paired`);
+    const body = clipboardHistoryUpsertBody(this.local.deviceId, entry, peerId);
+    if (!body) throw new Error("invalid clipboard history");
+    await this.sendEncryptedTo(peerId, peer, body);
+  }
+
+  async sendClipboardHistoryDelete(entry: {
+    id: string;
+    updatedAt: number;
+  }): Promise<void> {
+    if (!clipboardHistoryDeleteBody(this.local.deviceId, entry)) {
+      throw new Error("invalid clipboard history delete");
+    }
+    await this.fanOutShared((peerId) =>
+      clipboardHistoryDeleteBody(this.local.deviceId, entry, peerId),
+    );
+  }
+
+  async sendClipboardHistoryDeleteTo(
+    peerId: string,
+    entry: { id: string; updatedAt: number },
+  ): Promise<void> {
+    const peer = this.peerMap.get(peerId);
+    if (!peer) throw new Error(`host ${peerId} not paired`);
+    const body = clipboardHistoryDeleteBody(this.local.deviceId, entry, peerId);
+    if (!body) throw new Error("invalid clipboard history delete");
     await this.sendEncryptedTo(peerId, peer, body);
   }
 }

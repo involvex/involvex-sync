@@ -43,7 +43,10 @@ import {
 } from "./services/clipboardImage";
 import {
   appendClipboardHistory,
+  applyPeerHistoryDelete,
+  applyPeerHistoryUpsert,
   clearClipboardHistory,
+  listSharedClipboardHistory,
   loadClipboardHistory,
   removeClipboardHistory,
   type ClipboardHistoryEntry,
@@ -418,11 +421,28 @@ export default function App() {
     (
       text: string,
       direction: ClipboardHistoryEntry["direction"],
-      opts?: { kind?: "text" | "image"; imagePath?: string },
+      opts?: { kind?: "text" | "image"; imagePath?: string; sync?: boolean },
     ) => {
-      setHistory(appendClipboardHistory(text, direction, opts));
+      const { entries, entry } = appendClipboardHistory(text, direction, opts);
+      setHistory(entries);
+      const shouldSync =
+        opts?.sync !== false &&
+        direction !== "in" &&
+        entry &&
+        (entry.kind ?? "text") === "text";
+      if (shouldSync) {
+        void sessionRef.current
+          ?.sendClipboardHistoryUpsert({
+            id: entry.id,
+            text: entry.text,
+            updatedAt: entry.updatedAt,
+          })
+          .catch((e) =>
+            log(`history sync: ${e instanceof Error ? e.message : String(e)}`),
+          );
+      }
     },
-    [],
+    [log],
   );
 
   const notifyPairRequest = useCallback(async (request: PairRequestPayload) => {
@@ -680,6 +700,20 @@ export default function App() {
       onNoteDelete: (note) => {
         setNotes(applyPeerNoteDelete(note.id, note.updatedAt));
         log("note deleted from phone");
+      },
+      onClipboardHistoryUpsert: (entry) => {
+        setHistory(
+          applyPeerHistoryUpsert({
+            id: entry.id,
+            text: entry.text,
+            updatedAt: entry.updatedAt,
+          }),
+        );
+        log("clipboard history synced");
+      },
+      onClipboardHistoryDelete: (entry) => {
+        setHistory(applyPeerHistoryDelete(entry.id, entry.updatedAt));
+        log("clipboard history deleted remotely");
       },
       onSecretUpsert: (secret) => {
         secretUpsertBufRef.current.push({
@@ -960,6 +994,36 @@ export default function App() {
         }),
       );
       unsubs.push(
+        await listen<string>("isync-clipboard-history-resend", (e) => {
+          void (async () => {
+            const s = sessionRef.current;
+            if (!s || !liveRef.current) {
+              log("isync history resend: not connected");
+              return;
+            }
+            const id = (e.payload || "").trim();
+            const entry = loadClipboardHistory().find((row) => row.id === id);
+            if (!entry) {
+              log(`isync history resend missing: ${id}`);
+              return;
+            }
+            try {
+              if (entry.kind === "image") {
+                log("isync history resend: images are local-only");
+                return;
+              }
+              await s.sendClipboard(entry.text);
+              pushHistory(entry.text, "out");
+              log(`isync history resend → ${entry.id}`);
+              toast("Resent", "ok");
+            } catch (err) {
+              log(`isync history resend failed: ${String(err)}`);
+              toast("Resend failed", "err");
+            }
+          })();
+        }),
+      );
+      unsubs.push(
         await listen("isync-find", () => {
           void sessionRef.current
             ?.sendFindPhone()
@@ -1198,11 +1262,24 @@ export default function App() {
         body: n.body,
         updatedAt: n.updatedAt,
       })),
+      clipboardHistory: listSharedClipboardHistory().map((e) => ({
+        id: e.id,
+        text: e.text,
+        updatedAt: e.updatedAt,
+      })),
     };
     void invoke("control_publish_snapshot", { snap }).catch((err) =>
       log(`control snapshot: ${String(err)}`),
     );
-  }, [peers, activePeerId, notes, live, lan?.status.peerConnected, log]);
+  }, [
+    peers,
+    activePeerId,
+    notes,
+    history,
+    live,
+    lan?.status.peerConnected,
+    log,
+  ]);
 
   /**
    * Replay the full notes/secrets/vault snapshot to one peer that just came
@@ -1278,6 +1355,21 @@ export default function App() {
           }
         }
 
+        const historyRows = listSharedClipboardHistory();
+        for (const row of historyRows) {
+          try {
+            await s.sendClipboardHistoryUpsertTo(deviceId, {
+              id: row.id,
+              text: row.text,
+              updatedAt: row.updatedAt,
+            });
+          } catch (e) {
+            log(
+              `catch-up history ${row.id} → ${deviceId}: ${e instanceof Error ? e.message : String(e)}`,
+            );
+          }
+        }
+
         clearPendingNoteOps(
           loadPendingNoteOps().filter((op) => {
             const id = op.op === "upsert" ? op.note.id : op.id;
@@ -1291,7 +1383,12 @@ export default function App() {
             return !secretIds.has(id);
           }),
         );
-        if (notesRaw.length > 0 || secretsRaw.length > 0 || vaultKey) {
+        if (
+          notesRaw.length > 0 ||
+          secretsRaw.length > 0 ||
+          vaultKey ||
+          historyRows.length > 0
+        ) {
           log(`catch-up shared state → ${deviceId}`);
         }
       } catch (e) {
@@ -3715,9 +3812,24 @@ export default function App() {
                     <button
                       type="button"
                       className="ghost"
-                      onClick={() =>
-                        setHistory(removeClipboardHistory(entry.id))
-                      }
+                      onClick={() => {
+                        const { entries, removed } = removeClipboardHistory(
+                          entry.id,
+                        );
+                        setHistory(entries);
+                        if (removed && (removed.kind ?? "text") === "text") {
+                          void sessionRef.current
+                            ?.sendClipboardHistoryDelete({
+                              id: removed.id,
+                              updatedAt: Date.now(),
+                            })
+                            .catch((e) =>
+                              log(
+                                `history delete sync: ${e instanceof Error ? e.message : String(e)}`,
+                              ),
+                            );
+                        }
+                      }}
                     >
                       Remove
                     </button>
@@ -3729,8 +3841,19 @@ export default function App() {
               type="button"
               className="ghost"
               onClick={() => {
-                clearClipboardHistory();
+                const prev = clearClipboardHistory();
                 setHistory([]);
+                for (const row of prev) {
+                  if ((row.kind ?? "text") !== "text") continue;
+                  void sessionRef.current
+                    ?.sendClipboardHistoryDelete({
+                      id: row.id,
+                      updatedAt: Date.now(),
+                    })
+                    .catch(() => {
+                      /* best-effort */
+                    });
+                }
               }}
             >
               Clear history

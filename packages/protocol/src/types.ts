@@ -41,7 +41,9 @@ export type MessageType =
   | "note_delete"
   | "secret_upsert"
   | "secret_delete"
-  | "vault_key_share";
+  | "vault_key_share"
+  | "clipboard_history_upsert"
+  | "clipboard_history_delete";
 
 /** Max decoded file size for legacy single-shot base64 transfer (2 MiB). */
 export const MAX_FILE_TRANSFER_BYTES = 2 * 1024 * 1024;
@@ -262,6 +264,10 @@ export const MAX_NOTE_BODY_CHARS = 8_000;
 export const MAX_SECRET_LABEL_CHARS = 120;
 export const MAX_SECRET_VALUE_CHARS = 8_000;
 
+/** Soft caps for shared text clipboard history (images stay local). */
+export const MAX_CLIPBOARD_HISTORY = 50;
+export const MAX_CLIPBOARD_HISTORY_TEXT_CHARS = 2000;
+
 export type NoteUpsertPayload = {
   type: "note_upsert";
   id: string;
@@ -305,6 +311,23 @@ export type VaultKeySharePayload = {
   keyHex: string;
 };
 
+/**
+ * Shared text clipboard history row. Does not write the OS clipboard —
+ * History UI Copy / resend does that. Images are never sent on this path.
+ */
+export type ClipboardHistoryUpsertPayload = {
+  type: "clipboard_history_upsert";
+  id: string;
+  text: string;
+  updatedAt: number;
+};
+
+export type ClipboardHistoryDeletePayload = {
+  type: "clipboard_history_delete";
+  id: string;
+  updatedAt: number;
+};
+
 export type MessagePayload =
   | ShareUrlPayload
   | ClipboardUpdatePayload
@@ -330,7 +353,9 @@ export type MessagePayload =
   | NoteDeletePayload
   | SecretUpsertPayload
   | SecretDeletePayload
-  | VaultKeySharePayload;
+  | VaultKeySharePayload
+  | ClipboardHistoryUpsertPayload
+  | ClipboardHistoryDeletePayload;
 
 /** Cleartext body sealed inside the encrypted frame. */
 export type MessageBody = {

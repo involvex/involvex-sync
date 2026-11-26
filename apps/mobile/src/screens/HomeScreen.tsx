@@ -18,6 +18,7 @@ export function HomeScreen() {
     sendClipboardLink,
     resendHistory,
     removeHistory,
+    clearHistory,
     log,
   } = useSession();
 
@@ -115,6 +116,14 @@ export function HomeScreen() {
             </View>
           ))
         )}
+        {history.length > 0 ? (
+          <Pressable
+            style={styles.btnGhost}
+            onPress={() => void clearHistory()}
+          >
+            <Text style={styles.btnTextSm}>Clear history</Text>
+          </Pressable>
+        ) : null}
       </View>
     </ScrollView>
   );

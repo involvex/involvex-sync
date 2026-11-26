@@ -4,6 +4,8 @@ import {
   type KeyboardKeyId,
   DEFAULT_PORT,
   LoopGuard,
+  type ClipboardHistoryDeletePayload,
+  type ClipboardHistoryUpsertPayload,
   type MessageBody,
   createMessageBody,
   type NoteDeletePayload,
@@ -21,6 +23,8 @@ import {
   buildRelayHello,
   bytesToHex,
   chunkCountForSize,
+  clipboardHistoryDeleteBody,
+  clipboardHistoryUpsertBody,
   clipboardUpdateBody,
   decryptFrame,
   encryptFrame,
@@ -146,6 +150,14 @@ export type SessionHandlers = {
     from: string,
   ) => void | Promise<void>;
   onVaultKeyShare?: (keyHex: string, from: string) => void | Promise<void>;
+  onClipboardHistoryUpsert?: (
+    entry: ClipboardHistoryUpsertPayload,
+    from: string,
+  ) => void | Promise<void>;
+  onClipboardHistoryDelete?: (
+    entry: ClipboardHistoryDeletePayload,
+    from: string,
+  ) => void | Promise<void>;
   /**
    * Fired when a paired host's WebSocket opens (after the identifying ping).
    * Used to replay notes/secrets/vault catch-up to that host.
@@ -873,6 +885,12 @@ export class MobileSession {
       case "vault_key_share":
         await this.handlers.onVaultKeyShare?.(payload.keyHex, body.from);
         break;
+      case "clipboard_history_upsert":
+        await this.handlers.onClipboardHistoryUpsert?.(payload, body.from);
+        break;
+      case "clipboard_history_delete":
+        await this.handlers.onClipboardHistoryDelete?.(payload, body.from);
+        break;
       default:
         this.handlers.onLog(`recv unknown payload`);
     }
@@ -1318,6 +1336,60 @@ export class MobileSession {
   sendVaultKeyShareTo(peerId: string, keyHex: string): boolean {
     const body = vaultKeyShareBody(this.local.deviceId, keyHex, peerId);
     if (!body) throw new Error("invalid vault key");
+    return this.sendFrameTo(peerId, body);
+  }
+
+  sendClipboardHistoryUpsert(entry: {
+    id: string;
+    text: string;
+    updatedAt: number;
+  }): void {
+    if (!clipboardHistoryUpsertBody(this.local.deviceId, entry)) {
+      throw new Error("invalid clipboard history");
+    }
+    for (const id of this.conns.keys()) {
+      this.sendFrameTo(
+        id,
+        clipboardHistoryUpsertBody(
+          this.local.deviceId,
+          entry,
+          id,
+        ) as MessageBody,
+      );
+    }
+  }
+
+  sendClipboardHistoryUpsertTo(
+    peerId: string,
+    entry: { id: string; text: string; updatedAt: number },
+  ): boolean {
+    const body = clipboardHistoryUpsertBody(this.local.deviceId, entry, peerId);
+    if (!body) throw new Error("invalid clipboard history");
+    return this.sendFrameTo(peerId, body);
+  }
+
+  sendClipboardHistoryDelete(entry: { id: string; updatedAt: number }): void {
+    if (!clipboardHistoryDeleteBody(this.local.deviceId, entry)) {
+      throw new Error("invalid clipboard history delete");
+    }
+    for (const id of this.conns.keys()) {
+      this.sendFrameTo(
+        id,
+        clipboardHistoryDeleteBody(
+          this.local.deviceId,
+          entry,
+          id,
+        ) as MessageBody,
+      );
+    }
+  }
+
+  sendClipboardHistoryDeleteTo(
+    peerId: string,
+    entry: { id: string; updatedAt: number },
+  ): boolean {
+    const body = clipboardHistoryDeleteBody(this.local.deviceId, entry, peerId);
+    if (!body) throw new Error("invalid clipboard history delete");
     return this.sendFrameTo(peerId, body);
   }
 }

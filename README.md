@@ -50,6 +50,8 @@ bun run isync -- remote pwsh "Get-Date"
 bun run isync -- clipboard get
 bun run isync -- clipboard set "hello from PC"
 bun run isync -- clipboard push          # OS clipboard → phone
+bun run isync -- clipboard history       # shared text history
+bun run isync -- clipboard resend <id>   # resend one history row
 bun run isync -- share https://example.com
 bun run isync -- find
 bun run isync -- show
@@ -127,7 +129,7 @@ Release APK: `apps/mobile/android/app/build/outputs/apk/release/app-release.apk`
 1. On the phone: **Nearby → Pair** (mDNS) or **Scan PC QR** (desktop Connection tab). Accept the pair banner on the PC (OS toast + window come forward).
 2. After accept, status should read **Paired and connected**. Or paste desktop JSON under Advanced and tap **Connect**.
 3. Share a link via Android Share → involvex Sync — the PC browser opens. Send / Find / Files / Sync Keyboard need a live WebSocket (status strip: Live).
-4. On the phone, **Pick save folder** (Files card) so incoming files land on SD / Downloads via Android SAF — not private app storage. Optional **Folder sync → PC** watches a SAF folder while the app is foreground and Live and pushes new root files to the PC incoming directory.
+4. On the phone, **Pick save folder** (Files card) so incoming files land on SD / Downloads via Android SAF — not private app storage. Optional **Folder sync → PC** watches a SAF folder while the app is foreground and Live and pushes new/changed files (including subfolders, depth ≤8) to the PC incoming directory.
 5. Remote commands: phone **Run on PC** (PowerShell, opt-in on desktop); PC **Commands** tab for Termux (opt-in on phone) or local `adb shell`.
 6. Away from home: mode `relay` (Cloudflare) or `myfritz` with your forwarded host — not for first-time LAN pair.
 

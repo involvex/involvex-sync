@@ -19,6 +19,8 @@ pub struct ControlSnapshot {
     pub active_peer_id: Option<String>,
     pub peers: Vec<ControlPeer>,
     pub notes: Vec<ControlNote>,
+    #[serde(default)]
+    pub clipboard_history: Vec<ControlClipboardHistory>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -35,6 +37,14 @@ pub struct ControlNote {
     pub id: String,
     pub title: String,
     pub body: String,
+    pub updated_at: i64,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ControlClipboardHistory {
+    pub id: String,
+    pub text: String,
     pub updated_at: i64,
 }
 
@@ -169,6 +179,27 @@ async fn handle(
                 "application/json",
                 serde_json::to_string(&notes).unwrap_or_else(|_| "[]".into()),
             )
+        }
+        ("GET", "/v1/clipboard/history") => {
+            let rows = snap.lock().clipboard_history.clone();
+            (
+                200,
+                "application/json",
+                serde_json::to_string(&rows).unwrap_or_else(|_| "[]".into()),
+            )
+        }
+        ("POST", "/v1/clipboard/history/resend") => {
+            let id = body.trim().to_string();
+            if id.is_empty() {
+                (
+                    400,
+                    "application/json",
+                    r#"{"ok":false,"error":"empty history id"}"#.into(),
+                )
+            } else {
+                let _ = app.emit("isync-clipboard-history-resend", id);
+                (202, "application/json", r#"{"ok":true}"#.into())
+            }
         }
         ("POST", "/v1/notes") => {
             let payload = body.trim().to_string();
