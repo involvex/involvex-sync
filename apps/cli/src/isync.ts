@@ -52,6 +52,8 @@ Usage:
   isync clipboard get          Print OS clipboard
   isync clipboard set [text]   Set OS clipboard (stdin if no text)
   isync clipboard push         Push OS clipboard to the phone
+  isync clipboard history      List shared text clipboard history
+  isync clipboard resend <id>  Resend one history row to the phone
   isync share <url>            Send a link to the phone
   isync find                   Ring the phone
   isync keyboard type [text]   Type text on the phone (IME or a11y)
@@ -492,6 +494,51 @@ async function main(): Promise<void> {
           ? `pushed url ${asUrl}`
           : `pushed clipboard (${text.length} chars)`,
       );
+      return;
+    }
+    if (sub === "history") {
+      await requireDesktop();
+      const { status, text: body } = await control(
+        "GET",
+        "/v1/clipboard/history",
+      );
+      if (status >= 400) {
+        console.error(body);
+        process.exit(1);
+      }
+      const rows = JSON.parse(body) as Array<{
+        id: string;
+        text: string;
+        updatedAt: number;
+      }>;
+      if (rows.length === 0) {
+        console.log("(empty)");
+        return;
+      }
+      for (const row of rows) {
+        const preview =
+          row.text.length > 80 ? `${row.text.slice(0, 80)}…` : row.text;
+        console.log(`${row.id}\t${preview.replace(/\s+/g, " ")}`);
+      }
+      return;
+    }
+    if (sub === "resend") {
+      const id = rest[0]?.trim();
+      if (!id) {
+        console.error("need a history id — run isync clipboard history");
+        process.exit(1);
+      }
+      await requireDesktop();
+      const { status, text: body } = await control(
+        "POST",
+        "/v1/clipboard/history/resend",
+        id,
+      );
+      if (status >= 400) {
+        console.error(body);
+        process.exit(1);
+      }
+      console.log(`resent ${id}`);
       return;
     }
     usage();

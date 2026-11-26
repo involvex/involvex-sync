@@ -54,6 +54,8 @@ bun run isync -- status
 bun run isync -- clipboard get
 bun run isync -- clipboard set "hello from PC"
 bun run isync -- clipboard push
+bun run isync -- clipboard history
+bun run isync -- clipboard resend <id>
 bun run isync -- share https://example.com
 bun run isync -- find
 bun run isync -- show
@@ -130,7 +132,10 @@ bun run oauth:deploy:prod
 
 - **Peers are a list, never a singleton.** `load_peers`/`save_peer`/`remove_peer` on both platforms; the legacy single-peer key is folded in on first read (seed-on-read) and then deleted. Never add a "the one peer" field back.
 - **Route by identity, not by socket.** `WireFrame.from` is cleartext — pick the decryption key from it. `body.to`, when present, must equal the local device id or the frame is dropped.
-- **One active peer per side** drives clipboard / files / find-phone / remote commands; notes, secrets and the vault key are shared state and fan out to every connected host.
+- **One active peer per side** drives clipboard / files / find-phone / remote commands; notes, secrets, the vault key, and text clipboard history are shared state and fan out to every connected host.
+- **Phone→PC folder sync is recursive** (SAF tree, depth ≤8, `relativePath` on the wire; ledger keys use `flattenRelativePath`).
+- **`termux_open_url` / `termux_clipboard_set` are legacy** (receive-only). Prefer `remote_command` with `shell: "termux"`.
+- **Shared clipboard history** never writes the OS clipboard on receive — History UI / `isync clipboard resend` does.
 - **Pair replies go back on the socket they arrived on.** Queue pending pair requests with their conn id; the session maps `deviceId → connId` from inbound frames and sends via `ws_send_to`, so the selected device gets the frame rather than the most recently connected one. Unpairing closes that device's socket (`ws_close`).
 - **Never block the accept loop.** Each desktop socket is its own task; a phone that drops off Wi-Fi does not close its socket, so ping every 15 s and reap after 75 s of silence.
 - **Socket identity is established, not assumed.** The phone sends a `ping` on connect; the desktop records `deviceId → connId` from inbound frames and replies with `ws_send_to`. Never fall back to `ws_send` when more than one device is paired — it addresses the newest socket, not the selected device.

@@ -86,6 +86,10 @@ import {
 } from "../modules/invx-termux/src";
 import {
   appendClipboardHistory,
+  applyPeerHistoryDelete,
+  applyPeerHistoryUpsert,
+  clearClipboardHistory,
+  listSharedClipboardHistory,
   loadClipboardHistory,
   removeClipboardHistory,
   type ClipboardHistoryEntry,
@@ -115,6 +119,7 @@ import {
   listWatchCandidates,
   readWatchFile,
   SizeStabilizer,
+  watchLedgerName,
   type WatchItem,
 } from "./services/folderSyncWatch";
 import { planSafSave } from "./services/safPathPlan";
@@ -282,6 +287,7 @@ export type SessionContextValue = {
   sendClipboardLink: () => Promise<void>;
   resendHistory: (entry: ClipboardHistoryEntry) => Promise<void>;
   removeHistory: (id: string) => Promise<void>;
+  clearHistory: () => Promise<void>;
   testTermux: () => Promise<void>;
   pushKeyboardStatus: () => void;
   setImeReceive: (v: boolean) => void;
@@ -428,12 +434,32 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     async (
       text: string,
       direction: ClipboardHistoryEntry["direction"],
-      opts?: { kind?: "text" | "image"; imageUri?: string },
+      opts?: { kind?: "text" | "image"; imageUri?: string; sync?: boolean },
     ) => {
-      const next = await appendClipboardHistory(text, direction, opts);
-      setHistory(next);
+      const { entries, entry } = await appendClipboardHistory(
+        text,
+        direction,
+        opts,
+      );
+      setHistory(entries);
+      const shouldSync =
+        opts?.sync !== false &&
+        direction !== "in" &&
+        entry &&
+        (entry.kind ?? "text") === "text";
+      if (shouldSync) {
+        try {
+          sessionRef.current?.sendClipboardHistoryUpsert({
+            id: entry.id,
+            text: entry.text,
+            updatedAt: entry.updatedAt,
+          });
+        } catch (e) {
+          log(`history sync: ${String(e)}`);
+        }
+      }
     },
-    [],
+    [log],
   );
 
   const openUrlViaNotification = useCallback(
@@ -897,6 +923,20 @@ export function SessionProvider({ children }: { children: ReactNode }) {
           log(`vault key share failed: ${String(e)}`);
         }
       },
+      onClipboardHistoryUpsert: async (entry) => {
+        setHistory(
+          await applyPeerHistoryUpsert({
+            id: entry.id,
+            text: entry.text,
+            updatedAt: entry.updatedAt,
+          }),
+        );
+        log("clipboard history synced");
+      },
+      onClipboardHistoryDelete: async (entry) => {
+        setHistory(await applyPeerHistoryDelete(entry.id, entry.updatedAt));
+        log("clipboard history deleted remotely");
+      },
       onPeerOnline: (deviceId) => {
         void catchUpSharedToPeerRef.current(deviceId);
         void flushOutboxToPeerRef.current(deviceId);
@@ -1059,6 +1099,15 @@ export function SessionProvider({ children }: { children: ReactNode }) {
           if (!ok) secretIds.delete(sec.id);
         }
 
+        const historyRows = await listSharedClipboardHistory();
+        for (const row of historyRows) {
+          s.sendClipboardHistoryUpsertTo(deviceId, {
+            id: row.id,
+            text: row.text,
+            updatedAt: row.updatedAt,
+          });
+        }
+
         await clearPendingNoteOps(
           (await loadPendingNoteOps()).filter((op) => {
             const id = op.op === "upsert" ? op.note.id : op.id;
@@ -1072,7 +1121,12 @@ export function SessionProvider({ children }: { children: ReactNode }) {
             return !secretIds.has(id);
           }),
         );
-        if (notesRaw.length > 0 || secretsRaw.length > 0 || vaultKey) {
+        if (
+          notesRaw.length > 0 ||
+          secretsRaw.length > 0 ||
+          vaultKey ||
+          historyRows.length > 0
+        ) {
           log(`catch-up shared state → ${deviceId}`);
         }
       } catch (e) {
@@ -1797,7 +1851,34 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   }
 
   async function removeHistory(id: string): Promise<void> {
-    setHistory(await removeClipboardHistory(id));
+    const { entries, removed } = await removeClipboardHistory(id);
+    setHistory(entries);
+    if (removed && (removed.kind ?? "text") === "text") {
+      try {
+        sessionRef.current?.sendClipboardHistoryDelete({
+          id: removed.id,
+          updatedAt: Date.now(),
+        });
+      } catch (e) {
+        log(`history delete sync: ${String(e)}`);
+      }
+    }
+  }
+
+  async function clearHistory(): Promise<void> {
+    const prev = await clearClipboardHistory();
+    setHistory([]);
+    for (const row of prev) {
+      if ((row.kind ?? "text") !== "text") continue;
+      try {
+        sessionRef.current?.sendClipboardHistoryDelete({
+          id: row.id,
+          updatedAt: Date.now(),
+        });
+      } catch {
+        /* best-effort */
+      }
+    }
   }
 
   async function testTermux(): Promise<void> {
@@ -1914,7 +1995,8 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   const enqueueFolderSync = useCallback(
     (item: WatchItem) => {
       const ledger = folderSyncLedgerRef.current;
-      if (isSynced(ledger, item.name, item.size, item.mtimeMs)) return;
+      const ledgerName = watchLedgerName(item);
+      if (isSynced(ledger, ledgerName, item.size, item.mtimeMs)) return;
       const q = folderSyncQueueRef.current;
       if (q.some((x) => x.uri === item.uri && x.size === item.size)) return;
       if (q.length >= 40) {
@@ -1943,22 +2025,24 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     try {
       while (folderSyncQueueRef.current.length > 0 && s.isOpen) {
         const item = folderSyncQueueRef.current[0];
-        setFolderSyncStatus(`syncing ${item.name}…`);
+        const label = item.relativePath || item.name;
+        setFolderSyncStatus(`syncing ${label}…`);
         try {
           const file = await readWatchFile(item);
           s.sendFile({
             name: file.name,
             mimeType: file.mimeType,
             data: file.data,
+            relativePath: file.relativePath,
           });
           folderSyncLedgerRef.current = await markSynced(
             folderSyncLedgerRef.current,
-            item.name,
+            watchLedgerName(item),
             item.size,
             item.mtimeMs,
           );
           folderSyncLastErrorRef.current = null;
-          log(`folder sync → PC: ${item.name} (${item.size} B)`);
+          log(`folder sync → PC: ${label} (${item.size} B)`);
         } catch (e) {
           const msg = String(e);
           folderSyncLastErrorRef.current = msg;
@@ -2328,6 +2412,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     sendClipboardLink,
     resendHistory,
     removeHistory,
+    clearHistory,
     testTermux,
     pushKeyboardStatus,
     setImeReceive,

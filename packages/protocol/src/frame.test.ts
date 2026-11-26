@@ -1,6 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import { generateDeviceKeys } from "./crypto";
 import {
+  clipboardHistoryDeleteBody,
+  clipboardHistoryUpsertBody,
   decryptFrame,
   encryptFrame,
   fileOfferBody,
@@ -9,6 +11,7 @@ import {
   serializeFrame,
   shareUrlBody,
 } from "./frame";
+import { MAX_CLIPBOARD_HISTORY_TEXT_CHARS } from "./types";
 import { ChunkAssembler } from "./transfer";
 import {
   buildPairAccept,
@@ -184,5 +187,55 @@ describe("pair handshake", () => {
     expect(parsePairHandshake(JSON.stringify(rej))?.kind).toBe(
       "involvex-sync-pair-reject",
     );
+  });
+});
+
+describe("clipboard history payloads", () => {
+  test("upsert trims text and rejects empty", () => {
+    const long = "x".repeat(MAX_CLIPBOARD_HISTORY_TEXT_CHARS + 50);
+    const body = clipboardHistoryUpsertBody("a", {
+      id: "h1",
+      text: long,
+      updatedAt: 1,
+    });
+    expect(body?.payload.type).toBe("clipboard_history_upsert");
+    if (body?.payload.type === "clipboard_history_upsert") {
+      expect(body.payload.text.length).toBe(MAX_CLIPBOARD_HISTORY_TEXT_CHARS);
+    }
+    expect(
+      clipboardHistoryUpsertBody("a", { id: "h1", text: "  ", updatedAt: 1 }),
+    ).toBeNull();
+  });
+
+  test("delete requires id", () => {
+    expect(
+      clipboardHistoryDeleteBody("a", { id: "h1", updatedAt: 2 }),
+    ).not.toBeNull();
+    expect(
+      clipboardHistoryDeleteBody("a", { id: "", updatedAt: 2 }),
+    ).toBeNull();
+  });
+
+  test("unknown peer decrypt still fails closed", () => {
+    const phone = generateDeviceKeys();
+    const desktop = generateDeviceKeys();
+    const stranger = generateDeviceKeys();
+    const body = clipboardHistoryUpsertBody(phone.deviceId, {
+      id: "h1",
+      text: "hello",
+      updatedAt: 1,
+    });
+    if (!body) throw new Error("body");
+    const frame = encryptFrame(body, phone, {
+      deviceId: desktop.deviceId,
+      ed25519PublicKey: desktop.ed25519.publicKey,
+      x25519PublicKey: desktop.x25519.publicKey,
+    });
+    const result = decryptFrame(frame, desktop, {
+      deviceId: stranger.deviceId,
+      ed25519PublicKey: stranger.ed25519.publicKey,
+      x25519PublicKey: stranger.x25519.publicKey,
+    });
+    expect(result.ok).toBe(false);
   });
 });

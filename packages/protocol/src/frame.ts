@@ -21,6 +21,7 @@ import type {
 } from "./types";
 import {
   KEYBOARD_KEY_IDS,
+  MAX_CLIPBOARD_HISTORY_TEXT_CHARS,
   MAX_KEYBOARD_TEXT_CHARS,
   MAX_NOTE_BODY_CHARS,
   MAX_NOTE_TITLE_CHARS,
@@ -492,6 +493,42 @@ export function vaultKeyShareBody(
   return createMessageBody(
     from,
     { type: "vault_key_share", keyHex: keyHex.toLowerCase() },
+    to,
+  );
+}
+
+export function clipboardHistoryUpsertBody(
+  from: string,
+  entry: { id: string; text: string; updatedAt: number },
+  to?: string,
+): MessageBody | null {
+  const text = entry.text.trim();
+  if (!entry.id || !text || !Number.isFinite(entry.updatedAt)) return null;
+  return createMessageBody(
+    from,
+    {
+      type: "clipboard_history_upsert",
+      id: entry.id.slice(0, 64),
+      text: text.slice(0, MAX_CLIPBOARD_HISTORY_TEXT_CHARS),
+      updatedAt: entry.updatedAt,
+    },
+    to,
+  );
+}
+
+export function clipboardHistoryDeleteBody(
+  from: string,
+  entry: { id: string; updatedAt: number },
+  to?: string,
+): MessageBody | null {
+  if (!entry.id || !Number.isFinite(entry.updatedAt)) return null;
+  return createMessageBody(
+    from,
+    {
+      type: "clipboard_history_delete",
+      id: entry.id.slice(0, 64),
+      updatedAt: entry.updatedAt,
+    },
     to,
   );
 }

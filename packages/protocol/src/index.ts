@@ -20,6 +20,8 @@ export {
 } from "./crypto";
 export {
   adbScreencapRequestBody,
+  clipboardHistoryDeleteBody,
+  clipboardHistoryUpsertBody,
   clipboardUpdateBody,
   createMessageBody,
   decryptFrame,
@@ -70,6 +72,8 @@ export {
   FILE_CHUNK_BYTES,
   KEYBOARD_KEY_IDS,
   MAX_CHUNKED_FILE_BYTES,
+  MAX_CLIPBOARD_HISTORY,
+  MAX_CLIPBOARD_HISTORY_TEXT_CHARS,
   MAX_CLIPBOARD_IMAGE_BYTES,
   MAX_FILE_TRANSFER_BYTES,
   MAX_KEYBOARD_TEXT_CHARS,
@@ -84,6 +88,8 @@ export {
   PREFERRED_CLIPBOARD_IMAGE_BYTES,
   PROTOCOL_VERSION,
   type AdbScreencapRequestPayload,
+  type ClipboardHistoryDeletePayload,
+  type ClipboardHistoryUpsertPayload,
   type ClipboardUpdatePayload,
   type DeviceIdentity,
   type DeviceKeys,

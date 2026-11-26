@@ -16,12 +16,13 @@ Version: `1`
 ```
 
 Payload types: `share_url`, `clipboard_update`, `ping`, `pong`, `pair_ack`,
-`termux_open_url`, `termux_clipboard_set`, `file_transfer`, `file_offer`,
+`termux_open_url`, `termux_clipboard_set` (legacy — receive-only; prefer
+`remote_command` + `shell: "termux"`), `file_transfer`, `file_offer`,
 `file_chunk`, `file_done`, `file_abort`, `notification_mirror`,
 `keyboard_text`, `keyboard_key`, `keyboard_status`, `find_phone`,
 `remote_command`, `remote_command_result`, `adb_screencap_request`,
 `note_upsert`, `note_delete`, `secret_upsert`, `secret_delete`,
-`vault_key_share`.
+`vault_key_share`, `clipboard_history_upsert`, `clipboard_history_delete`.
 
 Chunked files: soft cap 100 MiB, ~64 KiB decoded chunks, `sha256` on
 `file_done`. Legacy `file_transfer` remains for ≤2 MiB.
@@ -36,6 +37,19 @@ Clipboard images reuse `file_transfer` / `file_offer` with
 after compress; hard abort above 2 MiB. Receivers apply to the OS clipboard
 instead of saving to the incoming-files folder. Text stays on
 `clipboard_update`.
+
+Shared text clipboard history (mesh fan-out + catch-up like notes):
+
+- `clipboard_history_upsert` / `clipboard_history_delete` — text rows only
+  (`MAX_CLIPBOARD_HISTORY` = 50, `MAX_CLIPBOARD_HISTORY_TEXT_CHARS` = 2000).
+- Receiving a history row must **not** write the OS clipboard; History UI
+  Copy / resend (or `isync clipboard resend`) does that.
+- Image history entries stay local (filesystem path / URI) and never travel
+  on this path. Live `clipboard_update` remains the current clip only.
+
+Legacy Termux payloads: `termux_open_url` and `termux_clipboard_set` remain
+in the union so old peers do not crash, but nothing sends them. PC→phone
+automation uses `remote_command` with `shell: "termux"`.
 
 Remote commands (`remote_command` / `remote_command_result`): `shell` is
 `pwsh` (phone→PC), `termux` (PC→phone via InVx Termux), or `adb`.

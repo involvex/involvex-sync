@@ -40,6 +40,11 @@
 - Images travel as chunked `file_*` with `purpose: "clipboard"` (≤2 MiB).
 - Clipboard sync never auto-opens URLs (stays on `clipboard_update` + history).
   Use the explicit Send link UI for `share_url` open-in-browser.
+- **Shared text clipboard history:** `clipboard_history_upsert` /
+  `clipboard_history_delete` fan out to every connected host and replay on
+  peer-online (same pattern as notes). Receiving a history row does not write
+  the OS clipboard — History UI Copy / Send (or `isync clipboard history` /
+  `isync clipboard resend <id>`) does. Image history stays local.
 - Echo suppression uses `LoopGuard` on text or image content hash.
 - Not Microsoft Phone Link — same E2E stack as the rest of Sync.
 - **Shizuku background clipboard (opt-in):** Settings toggle “Background
@@ -109,14 +114,17 @@ InVx Termux package: `com.involvex.termux_app`.
   Live again.
 - **Folder sync (phone → PC):** opt-in SAF watch folder on the phone (separate
   from the incoming save folder; UI can copy the save folder URI). Polls every
-  2 s while Live; root files only (no recursion). The dataSync keepalive
-  foreground service emits `onFolderTick` so scans continue when the activity
-  is backgrounded (status `watching (background)`). Without the service the
-  status is `paused (background)`. Size must stay stable across two polls
-  before enqueue. Mobile ledger (`invx-folder-sync-ledger.json`) avoids
-  re-sends. Soft cap 100 MiB; queue flushes when Live again. Desktop receives
-  via the normal incoming-files path (optional `relativePath` creates
-  subfolders). OEM battery killers can still stop background work.
+  2 s while Live; walks the SAF tree recursively (depth capped at 8 path
+  segments, visited-URI guard against cycles) and sends `relativePath` so the
+  PC recreates subfolders. Ledger keys use the flattened form
+  (`notes__2026__a.pdf`) so the same basename in two folders is distinct.
+  The dataSync keepalive foreground service emits `onFolderTick` so scans
+  continue when the activity is backgrounded (status `watching (background)`).
+  Without the service the status is `paused (background)`. Size must stay
+  stable across two polls before enqueue. Mobile ledger
+  (`invx-folder-sync-ledger.json`) avoids re-sends. Soft cap 100 MiB; queue
+  flushes when Live again. Desktop receives via the normal incoming-files
+  path. OEM battery killers can still stop background work.
 - **Folder sync (PC → Google Drive):** same watcher; opt-in second sink shells
   out to `gws drive +upload` (credentials from `gws auth login`). Separate
   Drive ledger in localStorage. Does not require the phone to be Live.

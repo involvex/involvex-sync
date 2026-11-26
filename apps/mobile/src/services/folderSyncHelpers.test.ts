@@ -2,9 +2,11 @@ import { describe, expect, test } from "bun:test";
 import {
   isIgnoredName,
   isSyncedEntry,
+  joinRelativeSegments,
   ledgerKey,
   SizeStabilizer,
   STABLE_CHECKS,
+  watchLedgerName,
 } from "./folderSyncHelpers";
 
 describe("folderSyncHelpers", () => {
@@ -30,6 +32,24 @@ describe("folderSyncHelpers", () => {
     expect(isIgnoredName("report.pdf")).toBe(false);
   });
 
+  test("joinRelativeSegments builds and validates paths", () => {
+    expect(joinRelativeSegments([], "a.pdf")).toBe("a.pdf");
+    expect(joinRelativeSegments(["notes", "2026"], "a.pdf")).toBe(
+      "notes/2026/a.pdf",
+    );
+    expect(joinRelativeSegments([".."], "a.pdf")).toBeNull();
+    expect(joinRelativeSegments(["notes"], "..")).toBeNull();
+  });
+
+  test("watchLedgerName flattens relativePath like desktop", () => {
+    expect(
+      watchLedgerName({ relativePath: "notes/2026/a.pdf", name: "a.pdf" }),
+    ).toBe("notes__2026__a.pdf");
+    expect(watchLedgerName({ relativePath: "a.pdf", name: "a.pdf" })).toBe(
+      "a.pdf",
+    );
+  });
+
   test("SizeStabilizer requires consecutive stable sizes", () => {
     const s = new SizeStabilizer();
     const item = {
@@ -37,6 +57,7 @@ describe("folderSyncHelpers", () => {
       uri: "content://a",
       size: 10,
       mtimeMs: 1,
+      relativePath: "a.bin",
     };
     expect(s.observe(item)).toBe(STABLE_CHECKS <= 1);
     if (STABLE_CHECKS > 1) {
