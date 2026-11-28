@@ -51,6 +51,7 @@ bun run isync -- clipboard get
 bun run isync -- clipboard set "hello from PC"
 bun run isync -- clipboard push          # OS clipboard → phone
 bun run isync -- clipboard history       # shared text history
+bun run isync -- clipboard history --query foo  # filter history
 bun run isync -- clipboard resend <id>   # resend one history row
 bun run isync -- share https://example.com
 bun run isync -- find

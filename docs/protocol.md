@@ -46,6 +46,8 @@ Shared text clipboard history (mesh fan-out + catch-up like notes):
   Copy / resend (or `isync clipboard resend`) does that.
 - Image history entries stay local (filesystem path / URI) and never travel
   on this path. Live `clipboard_update` remains the current clip only.
+- Client-side search, pin/favourites, and retention settings must not appear
+  on the wire — keep the upsert payload to `id` / `text` / `updatedAt` only.
 
 Legacy Termux payloads: `termux_open_url` and `termux_clipboard_set` remain
 in the union so old peers do not crash, but nothing sends them. PC→phone

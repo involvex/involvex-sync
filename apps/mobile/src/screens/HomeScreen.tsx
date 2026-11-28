@@ -1,6 +1,11 @@
 import * as Clipboard from "expo-clipboard";
 import * as FileSystem from "expo-file-system/legacy";
-import { Pressable, ScrollView, Text, View } from "react-native";
+import { useMemo, useState } from "react";
+import { Pressable, ScrollView, Text, TextInput, View } from "react-native";
+import {
+  filterClipboardHistory,
+  sortClipboardHistory,
+} from "../clipboardHistory";
 import { useSession } from "../sessionContext";
 import { useTheme } from "../themeContext";
 import { makeStyles } from "../ui/styles";
@@ -19,8 +24,15 @@ export function HomeScreen() {
     resendHistory,
     removeHistory,
     clearHistory,
+    toggleHistoryPin,
     log,
   } = useSession();
+  const [historyQuery, setHistoryQuery] = useState("");
+
+  const visibleHistory = useMemo(
+    () => sortClipboardHistory(filterClipboardHistory(history, historyQuery)),
+    [history, historyQuery],
+  );
 
   const statusTone = connected
     ? styles.statusLive
@@ -70,10 +82,22 @@ export function HomeScreen() {
 
       <View style={styles.card}>
         <Text style={styles.h2}>Clipboard history</Text>
+        <TextInput
+          style={styles.input}
+          placeholder="Search history…"
+          placeholderTextColor={colors.textMuted}
+          value={historyQuery}
+          onChangeText={setHistoryQuery}
+          autoCapitalize="none"
+          autoCorrect={false}
+          clearButtonMode="while-editing"
+        />
         {history.length === 0 ? (
           <Text style={styles.muted}>Nothing yet.</Text>
+        ) : visibleHistory.length === 0 ? (
+          <Text style={styles.muted}>No matches for that query.</Text>
         ) : (
-          history.slice(0, 12).map((entry) => (
+          visibleHistory.map((entry) => (
             <View key={entry.id} style={styles.historyRow}>
               <Pressable
                 style={{ flex: 1 }}
@@ -97,8 +121,17 @@ export function HomeScreen() {
                 }}
               >
                 <Text style={styles.historyText} numberOfLines={2}>
-                  [{entry.direction}]{entry.kind === "image" ? " 🖼 " : " "}
+                  {entry.pinned ? "📌 " : ""}[{entry.direction}]
+                  {entry.kind === "image" ? " 🖼 " : " "}
                   {entry.text}
+                </Text>
+              </Pressable>
+              <Pressable
+                style={styles.btnGhostSm}
+                onPress={() => void toggleHistoryPin(entry.id)}
+              >
+                <Text style={styles.btnTextSm}>
+                  {entry.pinned ? "Unpin" : "Pin"}
                 </Text>
               </Pressable>
               <Pressable

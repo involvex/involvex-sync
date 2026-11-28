@@ -3,6 +3,26 @@ import type { ThemePreference } from "./theme";
 
 const KEY = "invx.mobile.appSettings";
 
+export type ClipboardHistoryMax = 10 | 25 | 50;
+
+const HISTORY_MAX_PRESETS: readonly ClipboardHistoryMax[] = [10, 25, 50];
+
+export function parseClipboardHistoryMax(value: unknown): ClipboardHistoryMax {
+  if (
+    typeof value === "number" &&
+    HISTORY_MAX_PRESETS.includes(value as ClipboardHistoryMax)
+  ) {
+    return value as ClipboardHistoryMax;
+  }
+  if (typeof value === "string") {
+    const n = Number(value);
+    if (HISTORY_MAX_PRESETS.includes(n as ClipboardHistoryMax)) {
+      return n as ClipboardHistoryMax;
+    }
+  }
+  return 50;
+}
+
 export type MobileAppSettings = {
   /**
    * SAF directory URI from the system folder picker (content://…).
@@ -22,6 +42,8 @@ export type MobileAppSettings = {
    * Only active when autoClipboardSync is also on.
    */
   shizukuClipboardEnabled: boolean;
+  /** Local clipboard history retention (pinned rows kept outside this cap). */
+  clipboardHistoryMax: ClipboardHistoryMax;
   /** Appearance preference. Default system. */
   theme: ThemePreference;
   /** Google OAuth client ID (Android or Web) for Drive. */
@@ -45,6 +67,7 @@ export const defaultMobileAppSettings: MobileAppSettings = {
   autoClipboardSync: false,
   autoClipboardImages: true,
   shizukuClipboardEnabled: false,
+  clipboardHistoryMax: 50,
   theme: "system",
   /** Default Web OAuth client (also in app.json extra.oauth). */
   driveOAuthClientId:
@@ -111,6 +134,7 @@ export async function loadAppSettings(): Promise<MobileAppSettings> {
         typeof parsed.shizukuClipboardEnabled === "boolean"
           ? parsed.shizukuClipboardEnabled
           : defaults.shizukuClipboardEnabled,
+      clipboardHistoryMax: parseClipboardHistoryMax(parsed.clipboardHistoryMax),
       theme: parseTheme(parsed.theme),
       driveOAuthClientId:
         typeof parsed.driveOAuthClientId === "string" &&
@@ -172,6 +196,10 @@ export async function saveAppSettings(
       typeof patch.shizukuClipboardEnabled === "boolean"
         ? patch.shizukuClipboardEnabled
         : current.shizukuClipboardEnabled,
+    clipboardHistoryMax:
+      patch.clipboardHistoryMax !== undefined
+        ? parseClipboardHistoryMax(patch.clipboardHistoryMax)
+        : current.clipboardHistoryMax,
     theme: patch.theme !== undefined ? parseTheme(patch.theme) : current.theme,
     driveOAuthClientId:
       typeof patch.driveOAuthClientId === "string"

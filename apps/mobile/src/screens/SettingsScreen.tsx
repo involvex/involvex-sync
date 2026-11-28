@@ -22,7 +22,12 @@ import {
   KeyboardScreen,
   useScrollInputOnFocus,
 } from "../components/KeyboardScreen";
-import { saveAppSettings } from "../appSettings";
+import {
+  parseClipboardHistoryMax,
+  saveAppSettings,
+  type ClipboardHistoryMax,
+} from "../appSettings";
+import { setClipboardHistoryMax } from "../clipboardHistory";
 import { useSession } from "../sessionContext";
 import type { ThemePreference } from "../theme";
 import { useTheme } from "../themeContext";
@@ -184,6 +189,42 @@ export function SettingsScreen() {
             }}
             thumbColor={colors.switchThumb}
           />
+        </View>
+        <Text style={styles.body}>History retention</Text>
+        <Text style={styles.muted}>
+          How many unpinned clipboard rows to keep locally. Pins stay.
+        </Text>
+        <View style={styles.row}>
+          {([10, 25, 50] as const satisfies readonly ClipboardHistoryMax[]).map(
+            (n) => (
+              <Pressable
+                key={n}
+                style={
+                  appSettings.clipboardHistoryMax === n
+                    ? styles.btn
+                    : styles.btnGhost
+                }
+                onPress={() => {
+                  const max = parseClipboardHistoryMax(n);
+                  setClipboardHistoryMax(max);
+                  void saveAppSettings({ clipboardHistoryMax: max }).then(
+                    setAppSettings,
+                  );
+                  log(`clipboard history max → ${max}`);
+                }}
+              >
+                <Text
+                  style={
+                    appSettings.clipboardHistoryMax === n
+                      ? styles.btnText
+                      : styles.btnTextSm
+                  }
+                >
+                  {n}
+                </Text>
+              </Pressable>
+            ),
+          )}
         </View>
         <Text style={styles.muted}>
           Android 10+ blocks background clipboard reads. Use Share → involvex

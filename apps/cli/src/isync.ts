@@ -52,7 +52,8 @@ Usage:
   isync clipboard get          Print OS clipboard
   isync clipboard set [text]   Set OS clipboard (stdin if no text)
   isync clipboard push         Push OS clipboard to the phone
-  isync clipboard history      List shared text clipboard history
+  isync clipboard history [--query <text>]
+                           List shared text clipboard history (optional filter)
   isync clipboard resend <id>  Resend one history row to the phone
   isync share <url>            Send a link to the phone
   isync find                   Ring the phone
@@ -497,6 +498,20 @@ async function main(): Promise<void> {
       return;
     }
     if (sub === "history") {
+      let query = "";
+      for (let i = 0; i < rest.length; i++) {
+        const arg = rest[i]!;
+        if (arg === "--query") {
+          query = rest[++i] ?? "";
+          continue;
+        }
+        if (arg.startsWith("--query=")) {
+          query = arg.slice("--query=".length);
+          continue;
+        }
+        console.error(`unknown flag: ${arg}`);
+        process.exit(1);
+      }
       await requireDesktop();
       const { status, text: body } = await control(
         "GET",
@@ -511,11 +526,15 @@ async function main(): Promise<void> {
         text: string;
         updatedAt: number;
       }>;
-      if (rows.length === 0) {
-        console.log("(empty)");
+      const q = query.trim().toLowerCase();
+      const filtered = q
+        ? rows.filter((row) => row.text.toLowerCase().includes(q))
+        : rows;
+      if (filtered.length === 0) {
+        console.log(q ? "(no matches)" : "(empty)");
         return;
       }
-      for (const row of rows) {
+      for (const row of filtered) {
         const preview =
           row.text.length > 80 ? `${row.text.slice(0, 80)}…` : row.text;
         console.log(`${row.id}\t${preview.replace(/\s+/g, " ")}`);

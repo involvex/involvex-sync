@@ -44,7 +44,9 @@
   `clipboard_history_delete` fan out to every connected host and replay on
   peer-online (same pattern as notes). Receiving a history row does not write
   the OS clipboard — History UI Copy / Send (or `isync clipboard history` /
-  `isync clipboard resend <id>`) does. Image history stays local.
+  `isync clipboard resend <id>`) does. Image history stays local. Search, pin,
+  and retention caps are local-only; the mesh payload stays
+  `{id, text, updatedAt}`.
 - Echo suppression uses `LoopGuard` on text or image content hash.
 - Not Microsoft Phone Link — same E2E stack as the rest of Sync.
 - **Shizuku background clipboard (opt-in):** Settings toggle “Background

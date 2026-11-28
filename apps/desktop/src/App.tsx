@@ -46,9 +46,13 @@ import {
   applyPeerHistoryDelete,
   applyPeerHistoryUpsert,
   clearClipboardHistory,
+  filterClipboardHistory,
   listSharedClipboardHistory,
   loadClipboardHistory,
   removeClipboardHistory,
+  setClipboardHistoryMax,
+  sortClipboardHistory,
+  toggleClipboardHistoryPin,
   type ClipboardHistoryEntry,
 } from "./services/clipboardHistory";
 import {
@@ -90,8 +94,10 @@ import {
 } from "./services/gwsDrive";
 import {
   loadSettings,
+  parseClipboardHistoryMax,
   resolveTheme,
   saveSettings,
+  type ClipboardHistoryMax,
   type DesktopSettings,
   type ThemePreference,
 } from "./services/settings";
@@ -288,9 +294,12 @@ export default function App() {
   const [pendingPair, setPendingPair] = useState<PairRequestPayload | null>(
     null,
   );
-  const [history, setHistory] = useState<ClipboardHistoryEntry[]>(() =>
-    loadClipboardHistory(),
-  );
+  const [history, setHistory] = useState<ClipboardHistoryEntry[]>(() => {
+    const initial = loadSettings();
+    setClipboardHistoryMax(initial.clipboardHistoryMax);
+    return loadClipboardHistory();
+  });
+  const [historyQuery, setHistoryQuery] = useState("");
   const [settings, setSettings] = useState<DesktopSettings>(() =>
     loadSettings(),
   );
@@ -3780,62 +3789,98 @@ export default function App() {
           <article className="card">
             <h2>Clipboard history</h2>
             {!live ? <p className="hint">{offlineHint}</p> : null}
+            <input
+              type="search"
+              placeholder="Search history…"
+              value={historyQuery}
+              onChange={(e) => setHistoryQuery(e.target.value)}
+              aria-label="Search clipboard history"
+            />
             {history.length === 0 ? (
               <p className="muted small">Nothing yet.</p>
             ) : (
-              <ul className="history">
-                {history.slice(0, 12).map((entry) => (
-                  <li key={entry.id}>
-                    <button
-                      type="button"
-                      className="linkish"
-                      onClick={() => {
-                        if (entry.kind === "image" && entry.imagePath) {
-                          void clipboardSetImageFromPath(entry.imagePath);
-                        } else {
-                          void writeText(entry.text);
-                        }
-                      }}
-                      title="Copy"
-                    >
-                      [{entry.direction}]{entry.kind === "image" ? " 🖼 " : " "}
-                      {entry.text.slice(0, 120)}
-                      {entry.text.length > 120 ? "…" : ""}
-                    </button>
-                    <button
-                      type="button"
-                      disabled={!live}
-                      onClick={() => void resendHistory(entry)}
-                    >
-                      Send
-                    </button>
-                    <button
-                      type="button"
-                      className="ghost"
-                      onClick={() => {
-                        const { entries, removed } = removeClipboardHistory(
-                          entry.id,
-                        );
-                        setHistory(entries);
-                        if (removed && (removed.kind ?? "text") === "text") {
-                          void sessionRef.current
-                            ?.sendClipboardHistoryDelete({
-                              id: removed.id,
-                              updatedAt: Date.now(),
-                            })
-                            .catch((e) =>
-                              log(
-                                `history delete sync: ${e instanceof Error ? e.message : String(e)}`,
-                              ),
+              (() => {
+                const visible = sortClipboardHistory(
+                  filterClipboardHistory(history, historyQuery),
+                );
+                if (visible.length === 0) {
+                  return (
+                    <p className="muted small">No matches for that query.</p>
+                  );
+                }
+                return (
+                  <ul className="history">
+                    {visible.map((entry) => (
+                      <li key={entry.id}>
+                        <button
+                          type="button"
+                          className="linkish"
+                          onClick={() => {
+                            if (entry.kind === "image" && entry.imagePath) {
+                              void clipboardSetImageFromPath(entry.imagePath);
+                            } else {
+                              void writeText(entry.text);
+                            }
+                          }}
+                          title="Copy"
+                        >
+                          {entry.pinned ? "📌 " : ""}[{entry.direction}]
+                          {entry.kind === "image" ? " 🖼 " : " "}
+                          {entry.text.slice(0, 120)}
+                          {entry.text.length > 120 ? "…" : ""}
+                        </button>
+                        <button
+                          type="button"
+                          className="ghost"
+                          onClick={() => {
+                            const { entries } = toggleClipboardHistoryPin(
+                              entry.id,
                             );
-                        }
-                      }}
-                    >
-                      Remove
-                    </button>
-                  </li>
-                ))}
-              </ul>
+                            setHistory(entries);
+                          }}
+                          title={entry.pinned ? "Unpin" : "Pin"}
+                        >
+                          {entry.pinned ? "Unpin" : "Pin"}
+                        </button>
+                        <button
+                          type="button"
+                          disabled={!live}
+                          onClick={() => void resendHistory(entry)}
+                        >
+                          Send
+                        </button>
+                        <button
+                          type="button"
+                          className="ghost"
+                          onClick={() => {
+                            const { entries, removed } = removeClipboardHistory(
+                              entry.id,
+                            );
+                            setHistory(entries);
+                            if (
+                              removed &&
+                              (removed.kind ?? "text") === "text"
+                            ) {
+                              void sessionRef.current
+                                ?.sendClipboardHistoryDelete({
+                                  id: removed.id,
+                                  updatedAt: Date.now(),
+                                })
+                                .catch((e) =>
+                                  log(
+                                    `history delete sync: ${e instanceof Error ? e.message : String(e)}`,
+                                  ),
+                                );
+                            }
+                          }}
+                        >
+                          Remove
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                );
+              })()
             )}
             <button
               type="button"
@@ -3911,6 +3956,26 @@ export default function App() {
                   }}
                 />
                 Auto sync clipboard
+              </label>
+              <label>
+                History retention
+                <select
+                  value={settings.clipboardHistoryMax}
+                  onChange={(e) => {
+                    const max = parseClipboardHistoryMax(
+                      Number(e.target.value),
+                    ) as ClipboardHistoryMax;
+                    setClipboardHistoryMax(max);
+                    const next = saveSettings({ clipboardHistoryMax: max });
+                    setSettings(next);
+                    setHistory(loadClipboardHistory());
+                    log(`clipboard history max → ${max}`);
+                  }}
+                >
+                  <option value={10}>10 entries</option>
+                  <option value={25}>25 entries</option>
+                  <option value={50}>50 entries</option>
+                </select>
               </label>
               <label className="check">
                 <input

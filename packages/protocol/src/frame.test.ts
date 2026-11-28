@@ -201,10 +201,36 @@ describe("clipboard history payloads", () => {
     expect(body?.payload.type).toBe("clipboard_history_upsert");
     if (body?.payload.type === "clipboard_history_upsert") {
       expect(body.payload.text.length).toBe(MAX_CLIPBOARD_HISTORY_TEXT_CHARS);
+      expect(Object.keys(body.payload).sort()).toEqual([
+        "id",
+        "text",
+        "type",
+        "updatedAt",
+      ]);
     }
     expect(
       clipboardHistoryUpsertBody("a", { id: "h1", text: "  ", updatedAt: 1 }),
     ).toBeNull();
+  });
+
+  test("upsert payload stays id/text/updatedAt only even if caller passes extras", () => {
+    const body = clipboardHistoryUpsertBody("a", {
+      id: "h1",
+      text: "hello",
+      updatedAt: 1,
+      // @ts-expect-error local-only fields must not enter the wire builder
+      pinned: true,
+    });
+    expect(body?.payload.type).toBe("clipboard_history_upsert");
+    if (body?.payload.type === "clipboard_history_upsert") {
+      expect(body.payload).toEqual({
+        type: "clipboard_history_upsert",
+        id: "h1",
+        text: "hello",
+        updatedAt: 1,
+      });
+      expect("pinned" in body.payload).toBe(false);
+    }
   });
 
   test("delete requires id", () => {

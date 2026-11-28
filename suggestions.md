@@ -1,5 +1,7 @@
 # involvex Sync — Feature Suggestions
 
+> Shippable queue: [`ROADMAP.md`](ROADMAP.md). This file is the detailed catalogue.
+
 Analysis of the repository as it stands today (protocol v1, Bun workspaces,
 `@involvex/protocol`, Tauri desktop, Expo Android app, Cloudflare relay workers).
 This document lists features that are **not yet implemented** but fit the

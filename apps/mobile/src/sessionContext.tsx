@@ -92,6 +92,8 @@ import {
   listSharedClipboardHistory,
   loadClipboardHistory,
   removeClipboardHistory,
+  setClipboardHistoryMax,
+  toggleClipboardHistoryPin,
   type ClipboardHistoryEntry,
 } from "./clipboardHistory";
 import {
@@ -288,6 +290,7 @@ export type SessionContextValue = {
   resendHistory: (entry: ClipboardHistoryEntry) => Promise<void>;
   removeHistory: (id: string) => Promise<void>;
   clearHistory: () => Promise<void>;
+  toggleHistoryPin: (id: string) => Promise<void>;
   testTermux: () => Promise<void>;
   pushKeyboardStatus: () => void;
   setImeReceive: (v: boolean) => void;
@@ -510,6 +513,8 @@ export function SessionProvider({ children }: { children: ReactNode }) {
         setHost("");
         setPort(String(prefs.port || DEFAULT_PORT));
       }
+      const settings = await loadAppSettings();
+      setClipboardHistoryMax(settings.clipboardHistoryMax);
       setHistory(await loadClipboardHistory());
       setMirrorNotifs(await isNotifyMirrorEnabled());
       setListenerGranted(await isNotifyListenerGranted());
@@ -517,7 +522,6 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       setImeActive(await isImeActive());
       setA11yReceive(await isA11yReceiveEnabled());
       setA11yGranted(await isA11yServiceGranted());
-      const settings = await loadAppSettings();
       setAppSettings(settings);
       await setClipboardAutoEnabled(settings.autoClipboardSync);
       await setClipboardIncludeImages(settings.autoClipboardImages);
@@ -599,6 +603,11 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     appSettings.autoClipboardImages,
     appSettings.shizukuClipboardEnabled,
   ]);
+
+  useEffect(() => {
+    setClipboardHistoryMax(appSettings.clipboardHistoryMax);
+    void loadClipboardHistory().then(setHistory);
+  }, [appSettings.clipboardHistoryMax]);
 
   useEffect(() => {
     if (!appSettings.autoClipboardSync) return;
@@ -1881,6 +1890,11 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     }
   }
 
+  async function toggleHistoryPin(id: string): Promise<void> {
+    const { entries } = await toggleClipboardHistoryPin(id);
+    setHistory(entries);
+  }
+
   async function testTermux(): Promise<void> {
     try {
       if (!(await isTermuxInstalled())) {
@@ -2413,6 +2427,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     resendHistory,
     removeHistory,
     clearHistory,
+    toggleHistoryPin,
     testTermux,
     pushKeyboardStatus,
     setImeReceive,

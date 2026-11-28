@@ -55,6 +55,7 @@ bun run isync -- clipboard get
 bun run isync -- clipboard set "hello from PC"
 bun run isync -- clipboard push
 bun run isync -- clipboard history
+bun run isync -- clipboard history --query foo
 bun run isync -- clipboard resend <id>
 bun run isync -- share https://example.com
 bun run isync -- find
@@ -148,6 +149,20 @@ bun run oauth:deploy:prod
 - **Typecheck/lint/format** with repo scripts (`bun check`, `bun lint`, `bun fmt`). `bun check` runs Bun-native typechecking across workspaces (not `tsc --noEmit`).
 - **Protocol changes** affect all clients/workers — update [`docs/protocol.md`](docs/protocol.md) and verify compatibility across `packages/protocol`, desktop, mobile, CLI, and relay.
 - **Check paths/links** before publishing docs; keep command examples aligned with `package.json` scripts.
+
+## Current work
+
+See [`ROADMAP.md`](ROADMAP.md). Feature catalogue: [`suggestions.md`](suggestions.md).
+
+## Learned preferences
+
+- Prefer Bun for installs and scripts; use `bunx` for Expo/EAS tooling.
+- Do not run `adb` install/shell/screencap against the physical device during development.
+
+## Learned workspace facts
+
+- Shared text clipboard history fans out via `clipboard_history_upsert` / `delete`; pins/search/retention are local-only and must not enter the wire payload.
+- Image clipboard history stays local (path/URI); `listSharedClipboardHistory` returns text rows only.
 
 ### Sources used
 

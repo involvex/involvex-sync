@@ -15,6 +15,26 @@ const THEME_PRESETS: readonly ThemePreference[] = [
   "github",
 ] as const;
 
+export type ClipboardHistoryMax = 10 | 25 | 50;
+
+const HISTORY_MAX_PRESETS: readonly ClipboardHistoryMax[] = [10, 25, 50];
+
+export function parseClipboardHistoryMax(value: unknown): ClipboardHistoryMax {
+  if (
+    typeof value === "number" &&
+    HISTORY_MAX_PRESETS.includes(value as ClipboardHistoryMax)
+  ) {
+    return value as ClipboardHistoryMax;
+  }
+  if (typeof value === "string") {
+    const n = Number(value);
+    if (HISTORY_MAX_PRESETS.includes(n as ClipboardHistoryMax)) {
+      return n as ClipboardHistoryMax;
+    }
+  }
+  return 50;
+}
+
 export type DesktopSettings = {
   /** Show mirrored phone notifications as OS toasts. Default false. */
   showPhoneNotifications: boolean;
@@ -36,6 +56,8 @@ export type DesktopSettings = {
   autoClipboardSync: boolean;
   /** Include images/screenshots in auto clipboard sync. Default true when auto on. */
   autoClipboardImages: boolean;
+  /** Local clipboard history retention (pinned rows kept outside this cap). */
+  clipboardHistoryMax: ClipboardHistoryMax;
   /** Appearance preference. Default system. */
   theme: ThemePreference;
   /** Preferred adb device serial. Empty = auto-pick (hint only; mDNS serials change on reconnect). */
@@ -66,6 +88,7 @@ const defaults: DesktopSettings = {
   driveSyncFolderId: "",
   autoClipboardSync: false,
   autoClipboardImages: true,
+  clipboardHistoryMax: 50,
   theme: "system",
   adbSerial: "",
   scrcpyPath: "",
@@ -94,6 +117,7 @@ export function loadSettings(): DesktopSettings {
       ...defaults,
       ...parsed,
       theme: parseTheme(parsed.theme),
+      clipboardHistoryMax: parseClipboardHistoryMax(parsed.clipboardHistoryMax),
     };
   } catch {
     return { ...defaults };
@@ -103,6 +127,11 @@ export function loadSettings(): DesktopSettings {
 export function saveSettings(patch: Partial<DesktopSettings>): DesktopSettings {
   const next = { ...loadSettings(), ...patch };
   if (patch.theme !== undefined) next.theme = parseTheme(patch.theme);
+  if (patch.clipboardHistoryMax !== undefined) {
+    next.clipboardHistoryMax = parseClipboardHistoryMax(
+      patch.clipboardHistoryMax,
+    );
+  }
   localStorage.setItem(KEY, JSON.stringify(next));
   return next;
 }
